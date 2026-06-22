@@ -1,0 +1,16 @@
+{
+  "name": "puzzle-photo-frame",
+  "private": true,
+  "version": "1.0.0",
+  "description": "拼图裁剪加相框 - 上传照片，适配拼图尺寸，添加精美相框装饰，自由裁剪填充",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview"
+  },
+  "devDependencies": {
+    "gh-pages": "^6.3.0",
+    "vite": "^6.3.0"
+  }
+}
