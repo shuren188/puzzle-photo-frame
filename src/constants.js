@@ -42,3 +42,32 @@ export const OFFSET_RANGE = { min: -100, max: 100, step: 1 };
 /** 拖拽灵敏度 (降低幅度，减少误触) */
 export const DRAG_SENSITIVITY = 1.0;
 
+/**
+ * 相框配置
+ * 每个尺寸的横版/竖版相框文件映射
+ */
+export const FRAME_CONFIG = {
+  // 尺寸名称 → { 横版文件名, 竖版文件名 }
+  sizes: {
+    '35片': { name: '35片', label: '10×15cm' },
+    '70片': { name: '70片', label: '15×20cm' },
+    '120片': { name: '120片', label: '20×25cm' },
+    '200片': { name: '200片', label: '21×30cm' },
+    '300/520片': { name: '300/520片', label: '26×38cm' },
+  },
+  files: {
+    '35片': { file: '35（10x15）.jpg' },
+    '70片': { file: '70（15x20）.jpg' },
+    '120片': { file: '120（20x25）.jpg' },
+    '200片': { file: '200（21x30）.jpg' },
+    '300/520片': { file: '300和520（26x38）.jpg' },
+  },
+  /** 横版相框文件夹 */
+  horizontalDir: '带框效果图-横版',
+  /** 竖版相框文件夹 */
+  verticalDir: '带框效果图-竖版',
+};
+
+/** 默认是否开启相框（默认开启） */
+export const DEFAULT_FRAME_ENABLED = true;
+

@@ -3,3 +3,7 @@ dist/
 .DS_Store
 *.local
 reference.png
+analyze_frames.py
+# 相框原始图片在 public/ 中管理，根目录副本不纳入版本控制
+/带框效果图-横版/
+/带框效果图-竖版/

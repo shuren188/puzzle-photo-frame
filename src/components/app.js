@@ -1,7 +1,8 @@
-import { SIZES, QUALITIES, PRESET_COLORS, DEFAULTS, DRAG_SENSITIVITY } from '../constants.js';
+import { SIZES, QUALITIES, PRESET_COLORS, DEFAULTS, DRAG_SENSITIVITY, DEFAULT_FRAME_ENABLED } from '../constants.js';
 import { renderImage, loadImage, getPreviewSize } from '../utils/imageProcessor.js';
 import { downloadImage, getOutputFilename } from '../utils/download.js';
 import { ColorPicker } from './ColorPicker.js';
+import { loadFrameImage, getFrameUrl, getFrameBounds, compositeFramedImage } from '../utils/frameProcessor.js';
 
 const PINCH_SENSITIVITY = 0.45;
 
@@ -21,6 +22,12 @@ export class App {
       isDragging: false, dragStartX: 0, dragStartY: 0, dragStartOffsetX: 0, dragStartOffsetY: 0,
       isPinching: false, pinchStartDist: 0, pinchStartZoom: 100,
       touchStartTime: 0, touchMoved: false,
+      // 相框相关状态
+      frameEnabled: DEFAULT_FRAME_ENABLED,
+      frameImage: null,
+      frameBounds: null,
+      frameLoading: false,
+      frameLoadedUrl: null,
     };
     this.renderTimer = null;
     this.init();
@@ -56,6 +63,9 @@ export class App {
     this.els.rotateLeftBtn = document.getElementById('rotateLeftBtn');
     this.els.rotateRightBtn = document.getElementById('rotateRightBtn');
     this.els.pinchHint = document.getElementById('pinchHint');
+    this.els.frameToggle = document.getElementById('frameToggle');
+    this.els.frameToggleInput = document.getElementById('frameToggleInput');
+    this.els.frameStatus = document.getElementById('frameStatus');
   }
 
   init() {
@@ -63,6 +73,17 @@ export class App {
     this.renderQualityButtons();
     this.renderColorButtons();
     this.bindEvents();
+  }
+
+  /** 当前拼图尺寸经过旋转后的有效宽高 */
+  getEffectiveSize() {
+    const s = this.state.selectedSize;
+    const nr = this.state.rotation % 180 !== 0;
+    return {
+      cmW: nr ? s.heightCm : s.widthCm,
+      cmH: nr ? s.widthCm : s.heightCm,
+      isLandscape: (nr ? s.heightCm : s.widthCm) > (nr ? s.widthCm : s.heightCm),
+    };
   }
 
   renderSizeButtons() {
@@ -103,6 +124,8 @@ export class App {
       this.els.sizeScroll.querySelectorAll('.size-btn').forEach(b => b.classList.remove('active'));
       btn.classList.add('active');
       this.state.selectedSize = SIZES[parseInt(btn.dataset.index)];
+      // 尺寸变化 → 清空相框缓存，加载新相框
+      this.clearFrameCache();
       this.scheduleRender();
     });
 
@@ -148,12 +171,14 @@ export class App {
       this.state.rotation = (this.state.rotation - 90 + 360) % 360;
       this.els.rotateLeftBtn.classList.add('btn-clicked');
       setTimeout(() => this.els.rotateLeftBtn.classList.remove('btn-clicked'), 200);
+      this.clearFrameCache(); // 旋转改变横竖方向，需重载相框
       this.scheduleRender();
     };
     const rotateRight = () => {
       this.state.rotation = (this.state.rotation + 90) % 360;
       this.els.rotateRightBtn.classList.add('btn-clicked');
       setTimeout(() => this.els.rotateRightBtn.classList.remove('btn-clicked'), 200);
+      this.clearFrameCache(); // 旋转改变横竖方向，需重载相框
       this.scheduleRender();
     };
     this.els.rotateLeftBtn.addEventListener('click', rotateLeft);
@@ -177,6 +202,41 @@ export class App {
     this.els.canvasWrapper.addEventListener('click', (e) => {
       if (this.state.image && !this.state.isDragging) this.openFullscreenPreview(e);
     });
+
+    // 相框开关
+    if (this.els.frameToggleInput) {
+      this.els.frameToggleInput.addEventListener('change', (e) => {
+        this.state.frameEnabled = e.target.checked;
+        this.updateFrameStatusText();
+        this.scheduleRender();
+      });
+    }
+  }
+
+  /** 异步加载相框 */
+  async ensureFrameLoaded() {
+    const eff = this.getEffectiveSize();
+    const url = getFrameUrl(this.state.selectedSize.name, eff.isLandscape);
+    if (!url) { this.state.frameImage = null; this.state.frameBounds = null; return; }
+
+    // 如果已加载相同 URL，无需重新加载
+    if (this.state.frameLoadedUrl === url) return;
+
+    this.state.frameLoading = true;
+    this.state.frameLoadedUrl = null;
+    try {
+      const frameImg = await loadFrameImage(url);
+      this.state.frameImage = frameImg;
+      this.state.frameLoadedUrl = url;
+      this.state.frameBounds = getFrameBounds(frameImg);
+      // 加载完成后重新渲染（显示带相框效果）
+      this.scheduleRender();
+    } catch (err) {
+      console.error('相框加载失败:', err);
+      this.state.frameImage = null;
+      this.state.frameBounds = null;
+    }
+    this.state.frameLoading = false;
   }
 
   openColorPicker() {
@@ -213,10 +273,8 @@ export class App {
     const dx = (pos.x - this.state.dragStartX) * DRAG_SENSITIVITY;
     const dy = (pos.y - this.state.dragStartY) * DRAG_SENSITIVITY;
     const pw = this.els.previewCanvas.width, ph = this.els.previewCanvas.height;
-    const size = this.state.selectedSize;
-    const nr = this.state.rotation % 180 !== 0;
-    const tw = nr ? size.heightCm : size.widthCm, th = nr ? size.widthCm : size.heightCm;
-    const ia = this.state.image.naturalWidth / this.state.image.naturalHeight, ta = tw / th;
+    const eff = this.getEffectiveSize();
+    const ia = this.state.image.naturalWidth / this.state.image.naturalHeight, ta = eff.cmW / eff.cmH;
     let iw, ih;
     if (ia > ta) { ih = ph; iw = ih * ia; } else { iw = pw; ih = iw / ia; }
     const zf = this.state.zoom / 100;
@@ -252,10 +310,8 @@ export class App {
     const cx = (pos.clientX - r.left - ox) / scale, cy = (pos.clientY - r.top - oy) / scale;
     if (cx < 0 || cx > cw || cy < 0 || cy > ch) return false;
     const ia = this.state.image.naturalWidth / this.state.image.naturalHeight;
-    const s = this.state.selectedSize;
-    const nr = this.state.rotation % 180 !== 0;
-    const tw = nr ? s.heightCm : s.widthCm, th = nr ? s.widthCm : s.heightCm;
-    const ta = tw / th;
+    const eff = this.getEffectiveSize();
+    const ta = eff.cmW / eff.cmH;
     let iw, ih;
     if (ia > ta) { iw = cw; ih = cw / ia; } else { ih = ch; iw = ch * ia; }
     const zf = this.state.zoom / 100; iw *= zf; ih *= zf;
@@ -313,18 +369,43 @@ export class App {
 
   openFullscreenPreview() {
     if (!this.state.image) return;
-    const s = this.state.selectedSize;
-    const nr = this.state.rotation % 180 !== 0;
-    const cmW = nr ? s.heightCm : s.widthCm, cmH = nr ? s.widthCm : s.heightCm;
-    const ta = cmW / cmH;
-    let pvw = 480, pvh = Math.round(pvw / ta);
-    if (pvh > 680) { pvh = 680; pvw = Math.round(pvh * ta); }
     const canvas = document.createElement('canvas');
     const ctx = canvas.getContext('2d');
-    renderImage(ctx, this.state.image, pvw, pvh, {
-      zoom: this.state.zoom, offsetX: this.state.offsetX, offsetY: this.state.offsetY,
-      rotation: this.state.rotation, fillColor: this.state.fillColor,
-    });
+    const eff = this.getEffectiveSize();
+    const ta = eff.cmW / eff.cmH;
+
+    let pvw = 480, pvh = Math.round(pvw / ta);
+    if (pvh > 680) { pvh = 680; pvw = Math.round(pvh * ta); }
+
+    if (this.state.frameEnabled && this.state.frameImage && this.state.frameBounds) {
+      // 全屏显示带相框效果
+      const fw = this.state.frameImage.naturalWidth;
+      const fh = this.state.frameImage.naturalHeight;
+      const frameAspect = fw / fh;
+      let dispW, dispH;
+      if (frameAspect > 1) {
+        dispW = Math.min(pvw, 480);
+        dispH = Math.round(dispW / frameAspect);
+      } else {
+        dispH = Math.min(pvh, 680);
+        dispW = Math.round(dispH * frameAspect);
+      }
+      // 先渲染拼图到临时 canvas
+      const tempCanvas = document.createElement('canvas');
+      const tempCtx = tempCanvas.getContext('2d');
+      renderImage(tempCtx, this.state.image, Math.round(dispW * 0.7), Math.round(dispH * 0.7), {
+        zoom: this.state.zoom, offsetX: this.state.offsetX, offsetY: this.state.offsetY,
+        rotation: this.state.rotation, fillColor: this.state.fillColor,
+      });
+      compositeFramedImage(ctx, tempCanvas, this.state.frameImage, this.state.frameBounds, dispW, dispH);
+    } else {
+      // 无相框，显示拼图原图
+      renderImage(ctx, this.state.image, pvw, pvh, {
+        zoom: this.state.zoom, offsetX: this.state.offsetX, offsetY: this.state.offsetY,
+        rotation: this.state.rotation, fillColor: this.state.fillColor,
+      });
+    }
+
     const dataUrl = canvas.toDataURL('image/png');
 
     const overlay = document.createElement('div');
@@ -387,6 +468,8 @@ export class App {
       this.state.offsetY = DEFAULTS.offsetY;
       this.state.rotation = DEFAULTS.rotation;
       this.state.fillColor = DEFAULTS.fillColor;
+      this.state.frameImage = null;
+      this.state.frameBounds = null;
       this.els.zoomSlider.value = DEFAULTS.zoom;
       this.els.zoomValue.textContent = DEFAULTS.zoom + '%';
       this.els.offsetXSlider.value = DEFAULTS.offsetX;
@@ -406,7 +489,7 @@ export class App {
         card.style.setProperty('--anim-delay', `${(i + 1) * 0.12}s`);
       });
       this.hideLoading();
-      this.renderPreview();
+      this.scheduleRender();
     } catch (err) {
       this.hideLoading();
       this.showToast('图片加载失败，请重试');
@@ -417,6 +500,8 @@ export class App {
   resetToUpload() {
     this.state.image = null;
     this.state.originalFile = null;
+    this.state.frameImage = null;
+    this.state.frameBounds = null;
     this.els.uploadPlaceholder.style.display = 'flex';
     this.els.previewContainer.style.display = 'none';
     this.els.controlsSection.style.display = 'none';
@@ -444,26 +529,75 @@ export class App {
   scheduleRender() {
     if (this.renderTimer) cancelAnimationFrame(this.renderTimer);
     this.els.canvasWrapper.classList.add('updating');
-    this.renderTimer = requestAnimationFrame(() => this.renderPreview());
+    this.renderTimer = requestAnimationFrame(() => {
+      this.renderPreview();
+
+      // 异步加载相框（完成后会触发重新渲染）
+      if (this.state.frameEnabled && !this.state.frameImage && !this.state.frameLoading) {
+        this.ensureFrameLoaded();
+      }
+    });
   }
 
   renderPreview() {
     if (!this.state.image) return;
     const canvas = this.els.previewCanvas;
     const ctx = canvas.getContext('2d');
-    const size = this.state.selectedSize;
-    const nr = this.state.rotation % 180 !== 0;
-    const cmW = nr ? size.heightCm : size.widthCm, cmH = nr ? size.widthCm : size.heightCm;
-    const ps = getPreviewSize(cmW, cmH, 200);
-    const wrapper = this.els.canvasWrapper;
+
+    if (this.state.frameEnabled && this.state.frameImage && this.state.frameBounds) {
+      this.renderFramedPreview(ctx, canvas);
+    } else {
+      this.renderPlainPreview(ctx, canvas);
+    }
+
+    this.els.canvasWrapper.classList.remove('updating');
+  }
+
+  renderPlainPreview(ctx, canvas) {
+    const eff = this.getEffectiveSize();
+    const ps = getPreviewSize(eff.cmW, eff.cmH, 200);
     canvas.width = ps.width;
     canvas.height = ps.height;
-    wrapper.style.height = ps.height + 'px';
+    this.els.canvasWrapper.style.height = ps.height + 'px';
     renderImage(ctx, this.state.image, ps.width, ps.height, {
       zoom: this.state.zoom, offsetX: this.state.offsetX, offsetY: this.state.offsetY,
       rotation: this.state.rotation, fillColor: this.state.fillColor,
     });
-    this.els.canvasWrapper.classList.remove('updating');
+  }
+
+  async renderFramedPreview(ctx, canvas) {
+    if (!this.state.frameImage) return;
+
+    const fw = this.state.frameImage.naturalWidth;
+    const fh = this.state.frameImage.naturalHeight;
+    const frameAspect = fw / fh;
+
+    // 计算预览尺寸：以 frame 为基准，限制高度约 200px
+    let pvw, pvh;
+    if (frameAspect > 1) {
+      pvh = 200;
+      pvw = Math.round(pvh * frameAspect);
+      if (pvw > 460) { pvw = 460; pvh = Math.round(pvw / frameAspect); }
+    } else {
+      pvh = 200;
+      pvw = Math.round(pvh * frameAspect);
+    }
+
+    canvas.width = pvw;
+    canvas.height = pvh;
+    this.els.canvasWrapper.style.height = pvh + 'px';
+
+    // 先渲染用户拼图到临时 canvas
+    const tempCanvas = document.createElement('canvas');
+    const tempCtx = tempCanvas.getContext('2d');
+    // 用足够大的尺寸渲染拼图，合成时会自动 cover 适配内框
+    renderImage(tempCtx, this.state.image, Math.round(pvw * 1.5), Math.round(pvh * 1.5), {
+      zoom: this.state.zoom, offsetX: this.state.offsetX, offsetY: this.state.offsetY,
+      rotation: this.state.rotation, fillColor: this.state.fillColor,
+    });
+
+    // 合成到相框
+    compositeFramedImage(ctx, tempCanvas, this.state.frameImage, this.state.frameBounds, pvw, pvh);
   }
 
   async handleDownload() {
@@ -472,11 +606,10 @@ export class App {
       this.els.downloadBtn.disabled = true;
       this.els.downloadBtn.textContent = '处理中...';
       const size = this.state.selectedSize;
-      const mode = this.state.quality; // 0=原图(1x), 2=高清(2x)
+      const mode = this.state.quality;
 
-      const nr = this.state.rotation % 180 !== 0;
-      const cmW = nr ? size.heightCm : size.widthCm, cmH = nr ? size.widthCm : size.heightCm;
-      const targetAspect = cmW / cmH;
+      const eff = this.getEffectiveSize();
+      const targetAspect = eff.cmW / eff.cmH;
 
       // 基于图片原始分辨率计算输出尺寸
       const imgW = this.state.image.naturalWidth;
@@ -490,7 +623,7 @@ export class App {
         pxW = Math.round(imgH * targetAspect);
       }
 
-      // 高清模式: 2倍分辨率
+      // 高清模式
       const multiplier = mode > 0 ? mode : 1;
       pxW = Math.round(pxW * multiplier);
       pxH = Math.round(pxH * multiplier);
@@ -523,6 +656,18 @@ export class App {
   }
 
   updateAdjustSummary() { this.els.adjustSummaryText.textContent = `缩放 ${this.state.zoom}% · 位置微调`; }
+
+  clearFrameCache() {
+    this.state.frameImage = null;
+    this.state.frameBounds = null;
+    this.state.frameLoadedUrl = null;
+  }
+
+  updateFrameStatusText() {
+    if (this.els.frameStatus) {
+      this.els.frameStatus.textContent = this.state.frameEnabled ? '相框效果 开' : '相框效果 关';
+    }
+  }
 
   showLoading() {
     this.hideLoading();
