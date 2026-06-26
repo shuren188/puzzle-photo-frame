@@ -1,174 +1,138 @@
 <!DOCTYPE html>
-<html>
-<head><meta charset="UTF-8"><title>Frame Test</title></head>
-<body style="background:#111;color:#fff;font-family:sans-serif">
-<h2>相框合成测试</h2>
-<div id="status">加载中...</div>
-<canvas id="output" style="border:1px solid #333;max-width:100%;background:#000"></canvas>
-<div style="margin-top:12px">
-  <button id="test35h">测试 横版35片</button>
-  <button id="test70h">测试 横版70片</button>
-  <button id="test35v">测试 竖版35片</button>
-  <button id="test70v">测试 竖版70片</button>
+<html><head><meta charset="UTF-8"><title>Frame Test</title></head>
+<body style="background:#111;color:#fff;font-family:sans-serif;margin:20px">
+<h2>Frame Compositing Test</h2>
+<p>Loads frame + test puzzle, applies the compositing algorithm, shows each layer</p>
+<div id="log" style="background:#222;padding:8px;margin:8px 0;font-size:13px;min-height:20px"></div>
+<div style="display:flex;flex-wrap:wrap;gap:16px">
+  <div><h3>Layer 1: Frame with hole</h3><canvas id="c1" width="460" height="200" style="border:1px solid #555;width:460px"></canvas></div>
+  <div><h3>Layer 2: Puzzle+texture</h3><canvas id="c2" width="460" height="200" style="border:1px solid #555;width:460px"></canvas></div>
+  <div><h3>Final: Composited</h3><canvas id="c3" width="460" height="200" style="border:1px solid #555;width:460px"></canvas></div>
 </div>
-
+<div style="margin-top:12px">
+  <button onclick="test('h','35片')">横版35片</button>
+  <button onclick="test('h','70片')">横版70片</button>
+  <button onclick="test('v','35片')">竖版35片</button>
+  <button onclick="test('v','70片')">竖版70片</button>
+</div>
 <script>
-const BASE = 'https://shuren188.github.io/puzzle-photo-frame';
-
-// 硬编码内框边界
+const BASE = location.origin + '/puzzle-photo-frame';
 const BOUNDS = {
-  'h_35片':  { left: 268, top: 230, right: 2189, bottom: 1691 },
-  'h_70片':  { left: 310, top: 244, right: 2213, bottom: 1697 },
-  'v_35片':  { left: 260, top: 372, right: 1725, bottom: 2393 },
-  'v_70片':  { left: 266, top: 354, right: 1717, bottom: 2069 },
+  'h_35片':{left:268,top:230,right:2189,bottom:1691},'h_70片':{left:310,top:244,right:2213,bottom:1697},
+  'v_35片':{left:260,top:372,right:1725,bottom:2393},'v_70片':{left:266,top:354,right:1717,bottom:2069},
 };
+const log = (msg) => document.getElementById('log').textContent += msg + '\n';
 
 function loadImg(src) {
-  return new Promise((res, rej) => {
-    const i = new Image();
-    i.onload = () => res(i);
-    i.onerror = rej;
-    i.src = src;
-  });
+  return new Promise((res,rej) => { const i=new Image();i.onload=()=>res(i);i.onerror=rej;i.src=src; });
 }
 
-async function runTest(puzzleImg, frameKey, canvasW, canvasH) {
-  const canvas = document.getElementById('output');
-  const ctx = canvas.getContext('2d');
+async function test(orient, size) {
+  log(`=== Testing ${orient}_${size} ===`);
+  document.getElementById('log').textContent = '';
 
-  const frameKeyStr = frameKey;
-  const isLandscape = frameKeyStr.startsWith('h');
-  const sizeName = frameKeyStr.substring(2);
-  const frameUrl = `${BASE}/${isLandscape ? 'frames/h' : 'frames/v'}/${sizeName === '35片' ? '35' : '70'}.jpg`;
+  const frameUrl = `${BASE}/${orient==='h'?'frames/h':'frames/v'}/${size.replace('片','')}.jpg`;
+  log(`Loading frame: ${frameUrl}`);
 
-  console.log('Loading frame:', frameUrl);
-  const frameImg = await loadImg(frameUrl);
-  console.log('Frame loaded:', frameImg.naturalWidth, 'x', frameImg.naturalHeight);
+  // Use a colorful test image (another frame image with different content)
+  const puzzleUrl = `${BASE}/${orient==='h'?'frames/v':'frames/h'}/${size.replace('片','')}.jpg`;
 
-  const bounds = BOUNDS[frameKeyStr];
-  if (!bounds) { document.getElementById('status').textContent = 'NO BOUNDS'; return; }
+  try {
+    const frame = await loadImg(frameUrl);
+    const puzzle = await loadImg(puzzleUrl);
+    log(`Frame: ${frame.naturalWidth}x${frame.naturalHeight}, Puzzle: ${puzzle.naturalWidth}x${puzzle.naturalHeight}`);
 
-  const fw = frameImg.naturalWidth;
-  const fh = frameImg.naturalHeight;
-
-  canvas.width = canvasW || 460;
-  canvas.height = canvasH || 343;
-
-  const pvw = canvas.width;
-  const pvh = canvas.height;
-
-  const scaleX = pvw / fw;
-  const scaleY = pvh / fh;
-  const iL = Math.round(bounds.left * scaleX);
-  const iT = Math.round(bounds.top * scaleY);
-  const iR = Math.round(bounds.right * scaleX);
-  const iB = Math.round(bounds.bottom * scaleY);
-  const iw = iR - iL;
-  const ih = iB - iT;
-
-  console.log(`Canvas: ${pvw}x${pvh}, Inner: ${iw}x${ih} at (${iL},${iT})`);
-
-  // ===== 方法：绘制相框 → 切内框 → 拼图层（cover-fit + multiply）→ 合成 =====
-
-  // 1. 绘制相框
-  ctx.drawImage(frameImg, 0, 0, pvw, pvh);
-
-  // 2. 切内框
-  ctx.globalCompositeOperation = 'destination-out';
-  ctx.fillRect(iL, iT, iw, ih);
-  ctx.globalCompositeOperation = 'source-over';
-
-  // 3. 创建拼图层
-  const layerCanvas = document.createElement('canvas');
-  layerCanvas.width = iw;
-  layerCanvas.height = ih;
-  const lCtx = layerCanvas.getContext('2d');
-
-  // 3a. 绘制拼图（cover-fit）
-  const puzW = puzzleImg.naturalWidth;
-  const puzH = puzzleImg.naturalHeight;
-  const puzAspect = puzW / puzH;
-  const innerAspect = iw / ih;
-
-  let dX, dY, dW, dH;
-  if (puzAspect > innerAspect) {
-    dW = iw;
-    dH = Math.round(iw / puzAspect);
-    dX = 0;
-    dY = Math.round((ih - dH) / 2);
-  } else {
-    dH = ih;
-    dW = Math.round(ih * puzAspect);
-    dX = Math.round((iw - dW) / 2);
-    dY = 0;
-  }
-
-  console.log(`Puzzle: ${puzW}x${puzH}, Draw on layer at (${dX},${dY},${dW},${dH})`);
-
-  lCtx.drawImage(puzzleImg, 0, 0, puzW, puzH, dX, dY, dW, dH);
-
-  // 3b. 截取相框内框纹理并 multiply 叠加
-  const texCanvas = document.createElement('canvas');
-  texCanvas.width = iw;
-  texCanvas.height = ih;
-  const tCtx = texCanvas.getContext('2d');
-  tCtx.drawImage(frameImg,
-    bounds.left, bounds.top, bounds.right - bounds.left, bounds.bottom - bounds.top,
-    0, 0, iw, ih
-  );
-
-  lCtx.globalCompositeOperation = 'multiply';
-  lCtx.drawImage(texCanvas, 0, 0);
-  lCtx.globalCompositeOperation = 'source-over';
-
-  // 4. 合成到主画布
-  ctx.drawImage(layerCanvas, iL, iT);
-
-  document.getElementById('status').textContent =
-    `✅ ${frameKeyStr} | 画布: ${pvw}x${pvh} | 内框: ${iw}x${ih} | 拼图: ${puzW}x${puzH}`;
-}
-
-async function init() {
-  document.getElementById('status').textContent = '加载测试图片...';
-
-  // 测试图片 - 加载相框图片作为"拼图"演示（实际应该是用户图片）
-  const demoImg = await loadImg(`${BASE}/frames/v/35.jpg`);
-
-  document.getElementById('status').textContent = '图片加载完成，点击按钮测试';
-
-  // 计算预览尺寸
-  const getPreviewSize = (fw, fh) => {
+    const bounds = BOUNDS[`${orient}_${size}`];
+    const fw = frame.naturalWidth, fh = frame.naturalHeight;
     const aspect = fw / fh;
+
+    // Compute preview size
+    let pvw, pvh = 200;
     if (aspect > 1) {
-      let pvh = 200, pvw = Math.round(200 * aspect);
-      if (pvw > 460) { pvw = 460; pvh = Math.round(pvw / aspect); }
-      return { w: pvw, h: pvh };
+      pvw = Math.round(200 * aspect);
+      if (pvw > 460) { pvw = 460; pvh = Math.round(460 / aspect); }
     } else {
-      let pvh = 200, pvw = Math.round(200 * aspect);
-      return { w: pvw, h: pvh };
+      pvw = Math.round(200 * aspect);
     }
-  };
 
-  // 绑定按钮
-  const bind = (id, key) => {
-    const parts = key.split('_');
-    const isLandscape = parts[0] === 'h';
-    const frameUrl = `${BASE}/${isLandscape ? 'frames/h' : 'frames/v'}/${parts[1] === '35片' ? '35' : '70'}.jpg`;
+    log(`Preview size: ${pvw}x${pvh}`);
 
-    document.getElementById(id).onclick = async () => {
-      const frameImg = await loadImg(frameUrl);
-      const ps = getPreviewSize(frameImg.naturalWidth, frameImg.naturalHeight);
-      await runTest(demoImg, key, ps.w, ps.h);
-    };
-  };
+    const scaleX = pvw / fw, scaleY = pvh / fh;
+    const iL = Math.round(bounds.left * scaleX);
+    const iT = Math.round(bounds.top * scaleY);
+    const iR = Math.round(bounds.right * scaleX);
+    const iB = Math.round(bounds.bottom * scaleY);
+    const iw = iR - iL, ih = iB - iT;
+    log(`Inner area on canvas: ${iw}x${ih} at (${iL},${iT})`);
 
-  bind('test35h', 'h_35片');
-  bind('test70h', 'h_70片');
-  bind('test35v', 'v_35片');
-  bind('test70v', 'v_70片');
+    // === LAYER 1: Frame with hole ===
+    const c1 = document.getElementById('c1');
+    c1.width = pvw; c1.height = pvh;
+    const ctx1 = c1.getContext('2d');
+    ctx1.drawImage(frame, 0, 0, pvw, pvh);
+    ctx1.globalCompositeOperation = 'destination-out';
+    ctx1.fillRect(iL, iT, iw, ih);
+    ctx1.globalCompositeOperation = 'source-over';
+
+    // === LAYER 2: Puzzle + cutting lines ===
+    const c2 = document.getElementById('c2');
+    c2.width = pvw; c2.height = pvh;
+    const ctx2 = c2.getContext('2d');
+
+    // Create the puzzle layer canvas
+    const layer = document.createElement('canvas');
+    layer.width = iw; layer.height = ih;
+    const lCtx = layer.getContext('2d');
+
+    const pW = puzzle.naturalWidth, pH = puzzle.naturalHeight;
+    const pAspect = pW / pH, iAspect = iw / ih;
+
+    let dX, dY, dW, dH;
+    if (pAspect > iAspect) {
+      dW = iw; dH = Math.round(iw / pAspect);
+      dX = 0; dY = Math.round((ih - dH) / 2);
+    } else {
+      dH = ih; dW = Math.round(ih * pAspect);
+      dX = Math.round((iw - dW) / 2); dY = 0;
+    }
+
+    log(`Cover-fit puzzle: (${dX},${dY},${dW},${dH}) on ${iw}x${ih} layer`);
+
+    lCtx.drawImage(puzzle, 0, 0, pW, pH, dX, dY, dW, dH);
+
+    // Frame inner texture
+    const tex = document.createElement('canvas');
+    tex.width = iw; tex.height = ih;
+    const tCtx = tex.getContext('2d');
+    tCtx.drawImage(frame, bounds.left, bounds.top, bounds.right-bounds.left, bounds.bottom-bounds.top, 0, 0, iw, ih);
+
+    lCtx.globalCompositeOperation = 'multiply';
+    lCtx.drawImage(tex, 0, 0);
+    lCtx.globalCompositeOperation = 'source-over';
+
+    // Draw layer onto c2
+    ctx2.drawImage(frame, 0, 0, pvw, pvh);
+    ctx2.drawImage(layer, iL, iT);
+
+    // === LAYER 3: Final composited ===
+    const c3 = document.getElementById('c3');
+    c3.width = pvw; c3.height = pvh;
+    const ctx3 = c3.getContext('2d');
+    ctx3.drawImage(frame, 0, 0, pvw, pvh);
+    ctx3.globalCompositeOperation = 'destination-out';
+    ctx3.fillRect(iL, iT, iw, ih);
+    ctx3.globalCompositeOperation = 'source-over';
+    ctx3.drawImage(layer, iL, iT);
+
+    log('✅ Test complete');
+
+  } catch(e) {
+    log('❌ Error: ' + e.message);
+  }
 }
 
-init();
+// Run initial test
+test('h','35片');
 </script>
 </body>
 </html>
