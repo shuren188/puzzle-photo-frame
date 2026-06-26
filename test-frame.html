@@ -1,0 +1,174 @@
+<!DOCTYPE html>
+<html>
+<head><meta charset="UTF-8"><title>Frame Test</title></head>
+<body style="background:#111;color:#fff;font-family:sans-serif">
+<h2>相框合成测试</h2>
+<div id="status">加载中...</div>
+<canvas id="output" style="border:1px solid #333;max-width:100%;background:#000"></canvas>
+<div style="margin-top:12px">
+  <button id="test35h">测试 横版35片</button>
+  <button id="test70h">测试 横版70片</button>
+  <button id="test35v">测试 竖版35片</button>
+  <button id="test70v">测试 竖版70片</button>
+</div>
+
+<script>
+const BASE = 'https://shuren188.github.io/puzzle-photo-frame';
+
+// 硬编码内框边界
+const BOUNDS = {
+  'h_35片':  { left: 268, top: 230, right: 2189, bottom: 1691 },
+  'h_70片':  { left: 310, top: 244, right: 2213, bottom: 1697 },
+  'v_35片':  { left: 260, top: 372, right: 1725, bottom: 2393 },
+  'v_70片':  { left: 266, top: 354, right: 1717, bottom: 2069 },
+};
+
+function loadImg(src) {
+  return new Promise((res, rej) => {
+    const i = new Image();
+    i.onload = () => res(i);
+    i.onerror = rej;
+    i.src = src;
+  });
+}
+
+async function runTest(puzzleImg, frameKey, canvasW, canvasH) {
+  const canvas = document.getElementById('output');
+  const ctx = canvas.getContext('2d');
+
+  const frameKeyStr = frameKey;
+  const isLandscape = frameKeyStr.startsWith('h');
+  const sizeName = frameKeyStr.substring(2);
+  const frameUrl = `${BASE}/${isLandscape ? 'frames/h' : 'frames/v'}/${sizeName === '35片' ? '35' : '70'}.jpg`;
+
+  console.log('Loading frame:', frameUrl);
+  const frameImg = await loadImg(frameUrl);
+  console.log('Frame loaded:', frameImg.naturalWidth, 'x', frameImg.naturalHeight);
+
+  const bounds = BOUNDS[frameKeyStr];
+  if (!bounds) { document.getElementById('status').textContent = 'NO BOUNDS'; return; }
+
+  const fw = frameImg.naturalWidth;
+  const fh = frameImg.naturalHeight;
+
+  canvas.width = canvasW || 460;
+  canvas.height = canvasH || 343;
+
+  const pvw = canvas.width;
+  const pvh = canvas.height;
+
+  const scaleX = pvw / fw;
+  const scaleY = pvh / fh;
+  const iL = Math.round(bounds.left * scaleX);
+  const iT = Math.round(bounds.top * scaleY);
+  const iR = Math.round(bounds.right * scaleX);
+  const iB = Math.round(bounds.bottom * scaleY);
+  const iw = iR - iL;
+  const ih = iB - iT;
+
+  console.log(`Canvas: ${pvw}x${pvh}, Inner: ${iw}x${ih} at (${iL},${iT})`);
+
+  // ===== 方法：绘制相框 → 切内框 → 拼图层（cover-fit + multiply）→ 合成 =====
+
+  // 1. 绘制相框
+  ctx.drawImage(frameImg, 0, 0, pvw, pvh);
+
+  // 2. 切内框
+  ctx.globalCompositeOperation = 'destination-out';
+  ctx.fillRect(iL, iT, iw, ih);
+  ctx.globalCompositeOperation = 'source-over';
+
+  // 3. 创建拼图层
+  const layerCanvas = document.createElement('canvas');
+  layerCanvas.width = iw;
+  layerCanvas.height = ih;
+  const lCtx = layerCanvas.getContext('2d');
+
+  // 3a. 绘制拼图（cover-fit）
+  const puzW = puzzleImg.naturalWidth;
+  const puzH = puzzleImg.naturalHeight;
+  const puzAspect = puzW / puzH;
+  const innerAspect = iw / ih;
+
+  let dX, dY, dW, dH;
+  if (puzAspect > innerAspect) {
+    dW = iw;
+    dH = Math.round(iw / puzAspect);
+    dX = 0;
+    dY = Math.round((ih - dH) / 2);
+  } else {
+    dH = ih;
+    dW = Math.round(ih * puzAspect);
+    dX = Math.round((iw - dW) / 2);
+    dY = 0;
+  }
+
+  console.log(`Puzzle: ${puzW}x${puzH}, Draw on layer at (${dX},${dY},${dW},${dH})`);
+
+  lCtx.drawImage(puzzleImg, 0, 0, puzW, puzH, dX, dY, dW, dH);
+
+  // 3b. 截取相框内框纹理并 multiply 叠加
+  const texCanvas = document.createElement('canvas');
+  texCanvas.width = iw;
+  texCanvas.height = ih;
+  const tCtx = texCanvas.getContext('2d');
+  tCtx.drawImage(frameImg,
+    bounds.left, bounds.top, bounds.right - bounds.left, bounds.bottom - bounds.top,
+    0, 0, iw, ih
+  );
+
+  lCtx.globalCompositeOperation = 'multiply';
+  lCtx.drawImage(texCanvas, 0, 0);
+  lCtx.globalCompositeOperation = 'source-over';
+
+  // 4. 合成到主画布
+  ctx.drawImage(layerCanvas, iL, iT);
+
+  document.getElementById('status').textContent =
+    `✅ ${frameKeyStr} | 画布: ${pvw}x${pvh} | 内框: ${iw}x${ih} | 拼图: ${puzW}x${puzH}`;
+}
+
+async function init() {
+  document.getElementById('status').textContent = '加载测试图片...';
+
+  // 测试图片 - 加载相框图片作为"拼图"演示（实际应该是用户图片）
+  const demoImg = await loadImg(`${BASE}/frames/v/35.jpg`);
+
+  document.getElementById('status').textContent = '图片加载完成，点击按钮测试';
+
+  // 计算预览尺寸
+  const getPreviewSize = (fw, fh) => {
+    const aspect = fw / fh;
+    if (aspect > 1) {
+      let pvh = 200, pvw = Math.round(200 * aspect);
+      if (pvw > 460) { pvw = 460; pvh = Math.round(pvw / aspect); }
+      return { w: pvw, h: pvh };
+    } else {
+      let pvh = 200, pvw = Math.round(200 * aspect);
+      return { w: pvw, h: pvh };
+    }
+  };
+
+  // 绑定按钮
+  const bind = (id, key) => {
+    const parts = key.split('_');
+    const isLandscape = parts[0] === 'h';
+    const frameUrl = `${BASE}/${isLandscape ? 'frames/h' : 'frames/v'}/${parts[1] === '35片' ? '35' : '70'}.jpg`;
+
+    document.getElementById(id).onclick = async () => {
+      const frameImg = await loadImg(frameUrl);
+      const ps = getPreviewSize(frameImg.naturalWidth, frameImg.naturalHeight);
+      await runTest(demoImg, key, ps.w, ps.h);
+    };
+  };
+
+  bind('test35h', 'h_35片');
+  bind('test70h', 'h_70片');
+  bind('test35v', 'v_35片');
+  bind('test70v', 'v_70片');
+}
+
+init();
+</script>
+</body>
+</html>
