@@ -1,13 +1,13 @@
 /**
  * 相框处理模块
  *
- * 方案：相框边框叠加法
- *   1. 输出画布尺寸 = 相框宽高比（预览尺寸）
- *   2. 绘制拼图（cover-fit 到内框区域）
- *   3. 叠加相框内框切割线纹理（multiply）
- *   4. 叠加相框边框（内框已被 destination-out 挖空）
+ * 方案：直接合成法
+ *   不经过 renderImage 中间步骤，把用户原图直接绘制到相框内框
  *
- * 这样相框边框精确覆盖在拼图之上，内框让拼图透出，永不偏移。
+ *   1. 相框全图铺底（边框+白板+切割线）
+ *   2. 用户原图 cover-fitted 直接绘制到内框区域（替换白板）
+ *   3. 切割线纹理 overlay 叠加保持可见
+ *   4. 边框（内框挖空）盖在最顶层确保边框不受影响
  */
 
 const FILE_MAP = {
@@ -55,88 +55,30 @@ export function getFrameBounds(frameImg, sizeName, isLandscape) {
 }
 
 /**
- * 将拼图与相框合成（边框叠加法）
+ * 将用户图片直接合成到相框（不经过中间拼图步骤）
  *
- * 步骤：
- *   1. 背景色填充画布
- *   2. 拼图 cover-fit 到内框区域（裁剪适配）
- *   3. 叠加内框切割线纹理（multiply）
- *   4. 叠加相框边框（内框挖空透明）
- *
- * @param {CanvasRenderingContext2D} ctx
- * @param {HTMLCanvasElement} puzzleCanvas - renderImage 输出的拼图画布
- * @param {string} fillColor - 背景填充色
+ * @param {CanvasRenderingContext2D} ctx - 输出上下文
+ * @param {HTMLImageElement} userImg - 用户原始图片
  * @param {HTMLImageElement} frameImg - 相框图片
- * @param {{left,top,right,bottom}} bounds - 内框坐标（原始图片像素）
+ * @param {{left,top,right,bottom}} bounds - 内框坐标
  * @param {number} canvasW - 输出宽度
  * @param {number} canvasH - 输出高度
  */
-export function compositeFramedImage(ctx, puzzleCanvas, fillColor, frameImg, bounds, canvasW, canvasH) {
+export function compositeFramedDirect(ctx, userImg, frameImg, bounds, canvasW, canvasH) {
   ctx.canvas.width = canvasW;
   ctx.canvas.height = canvasH;
 
-  // ---- 计算内框在画布上的像素坐标 ----
   const sx = canvasW / frameImg.naturalWidth;
   const sy = canvasH / frameImg.naturalHeight;
   const iL = Math.round(bounds.left * sx);
   const iT = Math.round(bounds.top * sy);
-  const iR = Math.round(bounds.right * sx);
-  const iB = Math.round(bounds.bottom * sy);
-  const iw = iR - iL;
-  const ih = iB - iT;
+  const iw = Math.round((bounds.right - bounds.left) * sx);
+  const ih = Math.round((bounds.bottom - bounds.top) * sy);
   if (iw <= 2 || ih <= 2) return;
+  const iR = iL + iw;
+  const iB = iT + ih;
 
-  // ---- 1. 填充背景色 ----
-  ctx.fillStyle = fillColor || '#FFFFFF';
-  ctx.fillRect(0, 0, canvasW, canvasH);
-
-  // ---- 2. 绘制拼图 cover-fit 到内框 ----
-  const puzW = puzzleCanvas.width;
-  const puzH = puzzleCanvas.height;
-  const puzA = puzW / puzH;
-  const inA = iw / ih;
-
-  let dW, dH, dX, dY;
-  if (puzA > inA) {
-    // 拼图更宽 → 以宽为准填满内框，裁剪上下
-    dW = iw;
-    dH = Math.round(iw / puzA);
-    dX = 0;
-    dY = Math.round((ih - dH) / 2);
-  } else {
-    // 拼图更高 → 以高为准填满内框，裁剪左右
-    dH = ih;
-    dW = Math.round(ih * puzA);
-    dX = Math.round((iw - dW) / 2);
-    dY = 0;
-  }
-
-  // clip 到内框区域 + 绘制拼图
-  ctx.save();
-  ctx.beginPath();
-  ctx.rect(iL, iT, iw, ih);
-  ctx.clip();
-  ctx.drawImage(puzzleCanvas, iL + dX, iT + dY, dW, dH);
-  ctx.restore();
-
-  // ---- 3. 叠加切割线纹理（multiply，仅内框区域）----
-  const srcW = bounds.right - bounds.left;
-  const srcH = bounds.bottom - bounds.top;
-  const texCanvas = document.createElement('canvas');
-  texCanvas.width = iw;
-  texCanvas.height = ih;
-  const tCtx = texCanvas.getContext('2d');
-  tCtx.drawImage(frameImg, bounds.left, bounds.top, srcW, srcH, 0, 0, iw, ih);
-
-  ctx.save();
-  ctx.beginPath();
-  ctx.rect(iL, iT, iw, ih);
-  ctx.clip();
-  ctx.globalCompositeOperation = 'multiply';
-  ctx.drawImage(texCanvas, iL, iT);
-  ctx.restore();
-
-  // ---- 4. 叠加相框边框（内框已挖空透明）----
+  // ============ 第一步：相框边框（内框挖空）============
   const borderCanvas = document.createElement('canvas');
   borderCanvas.width = canvasW;
   borderCanvas.height = canvasH;
@@ -144,8 +86,58 @@ export function compositeFramedImage(ctx, puzzleCanvas, fillColor, frameImg, bou
   bCtx.drawImage(frameImg, 0, 0, canvasW, canvasH);
   bCtx.globalCompositeOperation = 'destination-out';
   bCtx.fillRect(iL, iT, iw, ih);
+  bCtx.globalCompositeOperation = 'source-over';
 
+  // ============ 第二步：计算内框在相框原图的纹理区域 ============
+  const texCanvas = document.createElement('canvas');
+  texCanvas.width = iw;
+  texCanvas.height = ih;
+  const tCtx = texCanvas.getContext('2d');
+  tCtx.drawImage(frameImg,
+    bounds.left, bounds.top, bounds.right - bounds.left, bounds.bottom - bounds.top,
+    0, 0, iw, ih
+  );
+
+  // ============ 第三步：合成到主画布 ============
+  // a) 绘制边框
   ctx.drawImage(borderCanvas, 0, 0);
+
+  // b) 在内框区域绘制用户图片（cover-fitted）
+  const iAspect = iw / ih;
+  const uW = userImg.naturalWidth;
+  const uH = userImg.naturalHeight;
+  const uAspect = uW / uH;
+
+  let srcX, srcY, srcW, srcH;
+  if (uAspect > iAspect) {
+    srcH = uH;
+    srcW = Math.round(uH * iAspect);
+    srcX = Math.round((uW - srcW) / 2);
+    srcY = 0;
+  } else {
+    srcW = uW;
+    srcH = Math.round(uW / iAspect);
+    srcX = 0;
+    srcY = Math.round((uH - srcH) / 2);
+  }
+
+  // clip 到内框区域再绘制用户图片
+  ctx.save();
+  ctx.beginPath();
+  ctx.rect(iL, iT, iw, ih);
+  ctx.clip();
+  ctx.drawImage(userImg, srcX, srcY, srcW, srcH, iL, iT, iw, ih);
+  ctx.restore();
+
+  // c) 在内框区域叠加切割线纹理（multiply）
+  ctx.save();
+  ctx.beginPath();
+  ctx.rect(iL, iT, iw, ih);
+  ctx.clip();
+  ctx.globalCompositeOperation = 'multiply';
+  ctx.drawImage(texCanvas, iL, iT);
+  ctx.globalCompositeOperation = 'source-over';
+  ctx.restore();
 }
 
 export function clearFrameBoundsCache() {}

@@ -2,7 +2,7 @@ import { SIZES, QUALITIES, PRESET_COLORS, DEFAULTS, DRAG_SENSITIVITY, DEFAULT_FR
 import { renderImage, loadImage, getPreviewSize } from '../utils/imageProcessor.js';
 import { downloadImage, getOutputFilename } from '../utils/download.js';
 import { ColorPicker } from './ColorPicker.js';
-import { loadFrameImage, getFrameUrl, getFrameBounds, compositeFramedImage } from '../utils/frameProcessor.js';
+import { loadFrameImage, getFrameUrl, getFrameBounds, compositeFramedDirect } from '../utils/frameProcessor.js';
 
 const PINCH_SENSITIVITY = 0.45;
 
@@ -392,18 +392,8 @@ export class App {
         dispH = Math.min(pvh, 680);
         dispW = Math.round(dispH * frameAspect);
       }
-      // 先用 renderImage 渲染拼图
-      const puzzleCanvas = document.createElement('canvas');
-      const puzzleCtx = puzzleCanvas.getContext('2d');
-      const puzzleAspect = eff.cmW / eff.cmH;
-      const puzW = Math.round(dispW * 1.5);
-      const puzH = Math.round(puzW / puzzleAspect);
-      renderImage(puzzleCtx, this.state.image, puzW, puzH, {
-        zoom: this.state.zoom, offsetX: this.state.offsetX, offsetY: this.state.offsetY,
-        rotation: this.state.rotation, fillColor: this.state.fillColor,
-      });
-      // 合成到相框（边框叠加法）
-      compositeFramedImage(ctx, puzzleCanvas, this.state.fillColor, this.state.frameImage, this.state.frameBounds, dispW, dispH);
+      // 直接合成到相框（不经过中间步骤）
+      compositeFramedDirect(ctx, this.state.image, this.state.frameImage, this.state.frameBounds, dispW, dispH);
     } else {
       // 无相框，显示拼图原图
       renderImage(ctx, this.state.image, pvw, pvh, {
@@ -572,8 +562,8 @@ export class App {
     });
   }
 
-  async renderFramedPreview(ctx, canvas) {
-    if (!this.state.frameImage) return;
+  renderFramedPreview(ctx, canvas) {
+    if (!this.state.frameImage || !this.state.image) return;
 
     const fw = this.state.frameImage.naturalWidth;
     const fh = this.state.frameImage.naturalHeight;
@@ -594,22 +584,8 @@ export class App {
     canvas.height = pvh;
     this.els.canvasWrapper.style.height = pvh + 'px';
 
-    // ---- 第一步：用 renderImage 将用户图片处理成拼图尺寸 ----
-    const eff = this.getEffectiveSize();
-    const puzzleAspect = eff.cmW / eff.cmH;
-    // 拼图画布尺寸（取内框像素大小的2倍，保证分辨率足够）
-    const effW = Math.round(pvw * 1.2);
-    const effH = Math.round(effW / puzzleAspect);
-
-    const puzzleCanvas = document.createElement('canvas');
-    const puzzleCtx = puzzleCanvas.getContext('2d');
-    renderImage(puzzleCtx, this.state.image, effW, effH, {
-      zoom: this.state.zoom, offsetX: this.state.offsetX, offsetY: this.state.offsetY,
-      rotation: this.state.rotation, fillColor: this.state.fillColor,
-    });
-
-    // ---- 第二步：将拼图图片合成到相框（边框叠加法） ----
-    compositeFramedImage(ctx, puzzleCanvas, this.state.fillColor, this.state.frameImage, this.state.frameBounds, pvw, pvh);
+    // 直接合成（不经过 renderImage 中间步骤）
+    compositeFramedDirect(ctx, this.state.image, this.state.frameImage, this.state.frameBounds, pvw, pvh);
   }
 
   async handleDownload() {
