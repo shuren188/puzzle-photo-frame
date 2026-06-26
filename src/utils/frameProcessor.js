@@ -2,28 +2,18 @@
  * 相框处理模块
  * 将拼图图片合成到相框效果图中
  *
- * 核心流程：
- * 1. 加载对应尺寸和方向的相框图片
- * 2. 自动检测相框内框（拼图区域）边界（基于拼图切割线边缘检测）
- * 3. 将用户拼图图片合成到内框区域，保留相框中的拼图切割线纹理
+ * 合成原理（使用 Canvas multiply 混合模式，GPU加速）：
+ * 1. 将用户拼图绘制到内框区域
+ * 2. 用 multiply 混合模式叠加相框的拼图切割线纹理
+ *    - 暗色像素（切割线）→ 乘法混合后会变暗，透出切割线
+ *    - 亮色像素（白板表面）→ 乘法混合后几乎不变，用户图片保留
  */
-
-/** 拼图切割线检测阈值 */
-const EDGE_THRESHOLD = 28;
-/** 内框检测 — 边缘密度阈值 */
-const EDGE_DENSITY_THRESHOLD = 0.006;
-/** 内框检测 — 持续确认行数 */
-const SUSTAINED_MIN = 8;
-/** 拼图白板亮度阈值 — 高于此值视为"白板表面" */
-const BOARD_BRIGHTNESS = 200;
 
 /** 缓存已检测的内框边界 */
 const boundsCache = new Map();
 
 /**
- * 加载相框图片（同域加载，不需要 crossOrigin）
- * @param {string} url
- * @returns {Promise<HTMLImageElement>}
+ * 加载相框图片
  */
 export function loadFrameImage(url) {
   return new Promise((resolve, reject) => {
@@ -36,96 +26,90 @@ export function loadFrameImage(url) {
 
 /**
  * 获取对应尺寸和方向的相框图片 URL
- * 使用 import.meta.env.BASE_URL 支持子目录部署（如 GitHub Pages）
+ * 使用 frames/h/ 和 frames/v/ 目录（纯英文文件名，避免中文编码问题）
  */
 export function getFrameUrl(sizeName, isLandscape) {
-  const folder = isLandscape ? '带框效果图-横版' : '带框效果图-竖版';
+  const folder = isLandscape ? 'frames/h' : 'frames/v';
   const fileMap = {
-    '35片': '35（10x15）.jpg',
-    '70片': '70（15x20）.jpg',
-    '120片': '120（20x25）.jpg',
-    '200片': '200（21x30）.jpg',
-    '300/520片': '300和520（26x38）.jpg',
+    '35片': '35.jpg',
+    '70片': '70.jpg',
+    '120片': '120.jpg',
+    '200片': '200.jpg',
+    '300/520片': '300.jpg',
   };
   const file = fileMap[sizeName];
   if (!file) return null;
-  // Vite 编译时替换 BASE_URL：
-  //   dev 模式: '/'
-  //   生产构建 (base:'./'): './'
   const base = import.meta.env.BASE_URL;
   return `${base}${folder}/${file}`;
 }
 
 /**
- * 通过边缘密度分析自动识别相框图片的内框（拼图区域）边界
- *
- * 原理：拼图切割线产生大量高频边缘 → 边缘密度高
- *       相框边框区域相对平滑 → 边缘密度低
- * 逐行扫描边缘密度，从上/下/左/右分别找到边缘密度激增的边界位置
+ * 通过边缘检测自动识别相框图片的内框（拼图区域）边界
  */
 export function findPuzzleBounds(imageData, width, height) {
   const data = imageData.data;
-  const getBrightness = (x, y) => {
-    const i = (y * width + x) * 4;
-    return (data[i] + data[i + 1] + data[i + 2]) / 3;
-  };
-
   const step = width > 2000 ? 3 : 2;
 
-  // 1. 计算每行的水平边缘密度
+  // 对每行计算水平边缘密度
   const rowDensity = new Float32Array(height);
   for (let y = 0; y < height; y++) {
     let count = 0, total = 0;
     for (let x = 0; x < width - step; x += step) {
-      if (Math.abs(getBrightness(x, y) - getBrightness(x + step, y)) > EDGE_THRESHOLD) count++;
+      const i1 = (y * width + x) * 4;
+      const i2 = (y * width + x + step) * 4;
+      const diff = Math.abs(data[i1] - data[i2]) + Math.abs(data[i1+1] - data[i2+1]) + Math.abs(data[i1+2] - data[i2+2]);
+      if (diff > 60) count++;
       total++;
     }
     rowDensity[y] = total > 0 ? count / total : 0;
   }
 
-  // 2. 计算每列的垂直边缘密度
+  // 对每列计算垂直边缘密度
   const colDensity = new Float32Array(width);
   for (let x = 0; x < width; x++) {
     let count = 0, total = 0;
     for (let y = 0; y < height - step; y += step) {
-      if (Math.abs(getBrightness(x, y) - getBrightness(x, y + step)) > EDGE_THRESHOLD) count++;
+      const i1 = (y * width + x) * 4;
+      const i2 = ((y + step) * width + x) * 4;
+      const diff = Math.abs(data[i1] - data[i2]) + Math.abs(data[i1+1] - data[i2+1]) + Math.abs(data[i1+2] - data[i2+2]);
+      if (diff > 60) count++;
       total++;
     }
     colDensity[x] = total > 0 ? count / total : 0;
   }
 
-  // 3. 找到连续的边缘密集区域边界
-  const findBoundary = (arr, start, end, dir) => {
+  // 从四边向内扫描找到拼图区域的边界
+  // 拼图区域边缘密度高，相框边框边缘密度低
+  const findFirstDense = (arr, start, end, dir) => {
+    const sustain = 6;
     let i = start;
-    const cond = (i) => dir > 0 ? i < end : i >= end;
-    while (cond(i)) {
-      let sustained = 0;
-      const limit = dir > 0 ? Math.min(i + SUSTAINED_MIN, end) : Math.max(i - SUSTAINED_MIN, end);
+    while (dir > 0 ? i < end : i >= end) {
+      let dense = 0;
+      const limit = dir > 0 ? Math.min(i + sustain, end) : Math.max(i - sustain, end);
       for (let j = i; dir > 0 ? j < limit : j > limit; j += dir) {
-        if (arr[j] > EDGE_DENSITY_THRESHOLD) sustained++;
+        if (arr[j] > 0.008) dense++;
       }
-      if (sustained >= SUSTAINED_MIN * 0.7) return i;
+      if (dense >= sustain * 0.6) return i;
       i += dir;
     }
     return dir > 0 ? end : start;
   };
 
-  // 4. 判断是否是"无边框"情况（整张图几乎全是拼图区域）
-  const rowsAbove = rowDensity.filter(d => d > EDGE_DENSITY_THRESHOLD).length;
-  const colsAbove = colDensity.filter(d => d > EDGE_DENSITY_THRESHOLD).length;
+  // 判断密集区占比
+  const denseRows = rowDensity.filter(d => d > 0.008).length;
+  const denseCols = colDensity.filter(d => d > 0.008).length;
 
   let left, top, right, bottom;
-
-  if ((rowsAbove / height) > 0.85 && (colsAbove / width) > 0.6) {
-    // 几乎整张图都是拼图区域 → 默认留 8% 边距
+  if ((denseRows / height) > 0.85 && (denseCols / width) > 0.6) {
+    // 几乎全是拼图区域（无边框相框）
     const mx = Math.round(width * 0.08);
     const my = Math.round(height * 0.08);
     left = mx; top = my; right = width - mx; bottom = height - my;
   } else {
-    top    = findBoundary(rowDensity, 0, height, 1);
-    bottom = findBoundary(rowDensity, height - 1, 0, -1);
-    left   = findBoundary(colDensity, 0, width, 1);
-    right  = findBoundary(colDensity, width - 1, 0, -1);
+    top    = findFirstDense(rowDensity, 0, height, 1);
+    bottom = findFirstDense(rowDensity, height - 1, 0, -1);
+    left   = findFirstDense(colDensity, 0, width, 1);
+    right  = findFirstDense(colDensity, width - 1, 0, -1);
   }
 
   left   = Math.max(0, left);
@@ -133,17 +117,10 @@ export function findPuzzleBounds(imageData, width, height) {
   right  = Math.min(width - 1, right);
   bottom = Math.min(height - 1, bottom);
 
-  // 5. 结果验证：如果检测结果不合理，使用保守的比例估计
+  // 验证结果
   const iw = right - left, ih = bottom - top;
-  if (iw < width * 0.25 || ih < height * 0.25 || iw <= 0 || ih <= 0) {
-    // 保守估计：内框约占图片 78% 中心区域
-    const mx = Math.round(width * 0.11);
-    const my = Math.round(height * 0.11);
-    return { left: mx, top: my, right: width - mx, bottom: height - my };
-  }
-
-  // 6. 边缘密度值分布检查：如果检测到的内框比例异常，也使用估计值
-  if (iw / ih < 0.3 || iw / ih > 3.0) {
+  if (iw < width * 0.2 || ih < height * 0.2 || iw <= 0 || ih <= 0) {
+    // 保守估计：内框约在中心 78% 区域
     const mx = Math.round(width * 0.11);
     const my = Math.round(height * 0.11);
     return { left: mx, top: my, right: width - mx, bottom: height - my };
@@ -165,19 +142,17 @@ export function getFrameBounds(frameImg) {
   const ctx = canvas.getContext('2d');
   ctx.drawImage(frameImg, 0, 0);
 
-  let imageData;
+  let bounds;
   try {
-    imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+    const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+    bounds = findPuzzleBounds(imageData, canvas.width, canvas.height);
   } catch (e) {
-    // getImageData 失败（如跨域问题），使用保守估计
+    // getImageData 失败时使用估计值
     const mx = Math.round(canvas.width * 0.11);
     const my = Math.round(canvas.height * 0.11);
-    const fallback = { left: mx, top: my, right: canvas.width - mx, bottom: canvas.height - my };
-    boundsCache.set(key, fallback);
-    return fallback;
+    bounds = { left: mx, top: my, right: canvas.width - mx, bottom: canvas.height - my };
   }
 
-  const bounds = findPuzzleBounds(imageData, canvas.width, canvas.height);
   boundsCache.set(key, bounds);
   return bounds;
 }
@@ -185,42 +160,35 @@ export function getFrameBounds(frameImg) {
 /**
  * 将用户拼图合成到相框中，保留拼图切割线纹理
  *
- * @param {CanvasRenderingContext2D} ctx - 输出 canvas 上下文
- * @param {HTMLCanvasElement|HTMLImageElement} puzzleSource - 用户拼图图片源
+ * 原理：
+ * 1. 绘制相框到画布
+ * 2. 在内框区域用 multiply 混合模式叠加相框的切割线纹理
+ *    - 画布上已有用户拼图（通过 renderFramedPreview 预先绘制）
+ *    - 用 multiply 混合绘制相框内框区域 → 暗色切割线透出，亮色白板不变
+ *
+ * @param {CanvasRenderingContext2D} ctx - 输出上下文
  * @param {HTMLImageElement} frameImg - 相框图片
- * @param {{left,top,right,bottom}} bounds - 内框边界（原始坐标）
- * @param {number} canvasW - 输出 canvas 宽度
- * @param {number} canvasH - 输出 canvas 高度
+ * @param {{left,top,right,bottom}} bounds - 内框边界（原始图片坐标）
+ * @param {number} canvasW - 输出宽度
+ * @param {number} canvasH - 输出高度
  */
 export function compositeFramedImage(ctx, puzzleSource, frameImg, bounds, canvasW, canvasH) {
+  // === 第一步：绘制相框背景（全尺寸）===
   ctx.canvas.width = canvasW;
   ctx.canvas.height = canvasH;
-
-  const sx = canvasW / frameImg.naturalWidth;
-  const sy = canvasH / frameImg.naturalHeight;
-
-  // 1. 绘制相框（缩放到 canvas 尺寸）
   ctx.drawImage(frameImg, 0, 0, canvasW, canvasH);
 
-  // 2. 计算内框在 canvas 坐标中的位置
+  // === 第二步：计算内框在画布上的位置 ===
+  const sx = canvasW / frameImg.naturalWidth;
+  const sy = canvasH / frameImg.naturalHeight;
   const iL = Math.round(bounds.left * sx);
   const iT = Math.round(bounds.top * sy);
-  const iR = Math.round(bounds.right * sx);
-  const iB = Math.round(bounds.bottom * sy);
-  const iw = iR - iL;
-  const ih = iB - iT;
-  if (iw <= 4 || ih <= 4) return;
+  const iw = Math.round((bounds.right - bounds.left) * sx);
+  const ih = Math.round((bounds.bottom - bounds.top) * sy);
 
-  // 3. 提取相框内框区域的像素（已含拼图切割线纹理）
-  let frameInnerData;
-  try {
-    frameInnerData = ctx.getImageData(iL, iT, iw, ih);
-  } catch (e) {
-    // getImageData 失败时直接用原图像素
-    return;
-  }
+  if (iw <= 2 || ih <= 2) return;
 
-  // 4. 计算拼图 cover 适配内框的裁剪区域
+  // === 第三步：离屏画布 A — 绘制用户拼图（cover 适配内框大小）===
   const puzW = puzzleSource.naturalWidth || puzzleSource.width;
   const puzH = puzzleSource.naturalHeight || puzzleSource.height;
   const puzAspect = puzW / puzH;
@@ -239,43 +207,39 @@ export function compositeFramedImage(ctx, puzzleSource, frameImg, bounds, canvas
     srcY = (puzH - srcH) / 2;
   }
 
-  // 5. 绘制拼图到离屏 canvas（缩放到内框大小）
-  const puzCanvas = document.createElement('canvas');
-  puzCanvas.width = iw;
-  puzCanvas.height = ih;
-  const puzCtx = puzCanvas.getContext('2d');
-  puzCtx.drawImage(puzzleSource, srcX, srcY, srcW, srcH, 0, 0, iw, ih);
-  const puzzleData = puzCtx.getImageData(0, 0, iw, ih);
+  // 画布 A：用户拼图
+  const canvasA = document.createElement('canvas');
+  canvasA.width = iw;
+  canvasA.height = ih;
+  const ctxA = canvasA.getContext('2d');
+  ctxA.drawImage(puzzleSource, srcX, srcY, srcW, srcH, 0, 0, iw, ih);
 
-  // 6. 像素级混合：保留拼图切割线，覆盖白板区域
-  const outData = new Uint8ClampedArray(puzzleData.data.length);
-  const len = puzzleData.data.length;
-  for (let i = 0; i < len; i += 4) {
-    const fR = frameInnerData.data[i];
-    const fG = frameInnerData.data[i + 1];
-    const fB = frameInnerData.data[i + 2];
-    const brightness = (fR + fG + fB) / 3;
+  // === 第四步：画布 B — 相框内框区域（含切割线纹理）===
+  const canvasB = document.createElement('canvas');
+  canvasB.width = iw;
+  canvasB.height = ih;
+  const ctxB = canvasB.getContext('2d');
+  ctxB.drawImage(frameImg,
+    bounds.left, bounds.top, bounds.right - bounds.left, bounds.bottom - bounds.top,
+    0, 0, iw, ih
+  );
 
-    // 亮度越高 → 越是白板表面 → 用用户图片
-    // 亮度越低 → 越是切割线/阴影 → 保留相框原色
-    let lineStrength;
-    if (brightness >= BOARD_BRIGHTNESS) {
-      lineStrength = 0;
-    } else if (brightness <= 100) {
-      lineStrength = 1;
-    } else {
-      lineStrength = (BOARD_BRIGHTNESS - brightness) / (BOARD_BRIGHTNESS - 100);
-    }
+  // === 第五步：用 multiply 混合将切割线融合到用户拼图上 ===
+  // 在画布 A 上使用 multiply 模式叠加画布 B
+  // 暗部（切割线）：使下方像素变暗 → 切割线显现
+  // 亮部（白板）：几乎不改变下方像素 → 用户图片保留
+  ctxA.save();
+  ctxA.globalCompositeOperation = 'multiply';
+  ctxA.drawImage(canvasB, 0, 0);
+  ctxA.restore();
 
-    outData[i]     = puzzleData.data[i]     * (1 - lineStrength) + fR * lineStrength;
-    outData[i + 1] = puzzleData.data[i + 1] * (1 - lineStrength) + fG * lineStrength;
-    outData[i + 2] = puzzleData.data[i + 2] * (1 - lineStrength) + fB * lineStrength;
-    outData[i + 3] = 255;
+  // === 第六步：将混合结果写回主画布 ===
+  try {
+    const blendedData = ctxA.getImageData(0, 0, iw, ih);
+    ctx.putImageData(blendedData, iL, iT);
+  } catch (e) {
+    // 写入失败时忽略（不影响相框边框）
   }
-
-  // 7. 将混合结果写回
-  const blended = new ImageData(outData, iw, ih);
-  ctx.putImageData(blended, iL, iT);
 }
 
 /** 清空边界缓存 */

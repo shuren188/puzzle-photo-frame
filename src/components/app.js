@@ -588,11 +588,25 @@ export class App {
     canvas.height = pvh;
     this.els.canvasWrapper.style.height = pvh + 'px';
 
-    // 先渲染用户拼图到临时 canvas
+    // 将用户图片 renderImage 到临时 canvas（处理 zoom/offset/rotation/padding）
+    // 使用足够大的尺寸，保证 cover 到内框时有足够分辨率
     const tempCanvas = document.createElement('canvas');
     const tempCtx = tempCanvas.getContext('2d');
-    // 用足够大的尺寸渲染拼图，合成时会自动 cover 适配内框
-    renderImage(tempCtx, this.state.image, Math.round(pvw * 1.5), Math.round(pvh * 1.5), {
+    const eff = this.getEffectiveSize();
+    const targetAspect = eff.cmW / eff.cmH;
+
+    // 计算在最终 canvas 上内框的实际像素尺寸
+    const iwPx = Math.round(pvw * (this.state.frameBounds.right - this.state.frameBounds.left) / fw);
+    const ihPx = Math.round(pvh * (this.state.frameBounds.bottom - this.state.frameBounds.top) / fh);
+
+    // 内框在 canvas 上的比例
+    const innerRatio = iwPx / ihPx;
+
+    // 用 renderImage 处理用户图片（含缩放/偏移/旋转/填充）
+    // 尺寸取内框的 2 倍，确保 cover 裁剪足够清晰
+    const puzzleW = Math.round(Math.max(iwPx, ihPx) * 2 * targetAspect);
+    const puzzleH = Math.round(Math.max(iwPx, ihPx) * 2);
+    renderImage(tempCtx, this.state.image, puzzleW, puzzleH, {
       zoom: this.state.zoom, offsetX: this.state.offsetX, offsetY: this.state.offsetY,
       rotation: this.state.rotation, fillColor: this.state.fillColor,
     });
