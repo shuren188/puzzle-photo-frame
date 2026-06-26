@@ -15,6 +15,14 @@ if %errorlevel% neq 0 (
     exit /b 1
 )
 
+REM 检查远程仓库协议，若为 SSH 但不可用则切换 HTTPS
+git remote get-url origin | findstr "git@" >nul
+if %errorlevel% equ 0 (
+    echo [检查] 检测到 SSH 协议，尝试切换为 HTTPS...
+    git remote set-url origin https://github.com/shuren188/puzzle-photo-frame.git
+    echo [OK] 已切换为 HTTPS 协议
+)
+
 REM 检查是否有未提交的改动
 git diff --quiet HEAD
 if %errorlevel% neq 0 (
@@ -42,12 +50,20 @@ if %errorlevel% neq 0 (
     exit /b 1
 )
 
-echo [2/3] 安装部署工具...
-call npm install --save-dev gh-pages >nul 2>&1
+REM 构建
+echo [2/4] 构建项目...
+call npx vite build
+if %errorlevel% neq 0 (
+    echo [错误] 构建失败
+    pause
+    exit /b 1
+)
+echo [OK] 构建成功
+echo.
 
 REM 部署到 gh-pages
-echo [3/3] 部署到 GitHub Pages...
-call npx gh-pages -d dist -m "deploy: v1.0 - 基于拼图裁剪改造，准备添加相框"
+echo [3/4] 部署到 GitHub Pages...
+call npx gh-pages -d dist -m "deploy: v2.0 - 新增相框装饰功能"
 if %errorlevel% neq 0 (
     echo [错误] 部署失败
     pause
