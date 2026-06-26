@@ -229,7 +229,7 @@ export class App {
       const frameImg = await loadFrameImage(url);
       this.state.frameImage = frameImg;
       // getFrameBounds 成功后才标记已加载（防止失败后无法重试）
-      this.state.frameBounds = getFrameBounds(frameImg);
+      this.state.frameBounds = getFrameBounds(frameImg, this.state.selectedSize.name, eff.isLandscape);
       this.state.frameLoadedUrl = url;
       this.scheduleRender();
     } catch (err) {

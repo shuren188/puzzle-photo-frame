@@ -1,14 +1,25 @@
 /**
  * 相框处理模块
- * 将拼图图片合成到相框效果图中
  *
- * 合成原理：
- *   1. 先用 renderImage 将用户图片处理成拼图图（含填充色/缩放/偏移/旋转）
- *   2. 再将拼图图片 contain-fit 到相框内框区域
- *   3. multiply 叠加切割线纹理
+ * 采用两种可靠技术：
+ * 1. 预定义的内框坐标（不依赖自动检测）— 基于实际图片分析
+ * 2. 像素级合成（不依赖GPU混合模式）— 精确保留切割线，完全替换白板
  */
 
-const boundsCache = new Map();
+/** 预定义内框边界（基于Python颜色变化分析，单位：原始图片像素） */
+const BOUNDS_MAP = {
+  // key: "isLandscape_sizeName"
+  'true_35片':  { left: 268, top: 230, right: 2189, bottom: 1691 },
+  'true_70片':  { left: 310, top: 244, right: 2213, bottom: 1697 },
+  'true_120片': { left: 262, top: 198, right: 2201, bottom: 1791 },
+  'true_200片': { left: 2,   top: 156, right: 2311, bottom: 1645 },
+  'true_300/520片':  { left: 28,  top: 146, right: 2138, bottom: 1665 },
+  'false_35片': { left: 260, top: 372, right: 1725, bottom: 2393 },
+  'false_70片': { left: 266, top: 354, right: 1717, bottom: 2069 },
+  'false_120片':{ left: 152, top: 256, right: 1707, bottom: 2297 },
+  'false_200片':{ left: 180, top: 202, right: 1715, bottom: 2343 },
+  'false_300/520片': { left: 26,  top: 182, right: 1631, bottom: 2395 },
+};
 
 export function loadFrameImage(url) {
   return new Promise((resolve, reject) => {
@@ -31,119 +42,41 @@ export function getFrameUrl(sizeName, isLandscape) {
 }
 
 /**
- * 边缘密度检测自动识别内框边界
+ * 获取预定义的内框边界（根据尺寸和横竖方向）
  */
-export function findPuzzleBounds(imageData, width, height) {
-  const data = imageData.data;
-  const step = Math.max(2, Math.floor(Math.min(width, height) / 400));
+export function getFrameBounds(frameImg, sizeName, isLandscape) {
+  const key = `${isLandscape}_${sizeName}`;
+  const predef = BOUNDS_MAP[key];
+  if (predef) return predef;
 
-  const rowDensity = new Float32Array(height);
-  for (let y = 0; y < height; y++) {
-    let count = 0, total = 0;
-    for (let x = 0; x < width - step; x += step) {
-      const i1 = (y * width + x) * 4;
-      const i2 = (y * width + x + step) * 4;
-      if (Math.abs(data[i1] - data[i2]) + Math.abs(data[i1+1] - data[i2+1]) + Math.abs(data[i1+2] - data[i2+2]) > 50) count++;
-      total++;
-    }
-    rowDensity[y] = total > 0 ? count / total : 0;
-  }
-
-  const colDensity = new Float32Array(width);
-  for (let x = 0; x < width; x++) {
-    let count = 0, total = 0;
-    for (let y = 0; y < height - step; y += step) {
-      const i1 = (y * width + x) * 4;
-      const i2 = ((y + step) * width + x) * 4;
-      if (Math.abs(data[i1] - data[i2]) + Math.abs(data[i1+1] - data[i2+1]) + Math.abs(data[i1+2] - data[i2+2]) > 50) count++;
-      total++;
-    }
-    colDensity[x] = total > 0 ? count / total : 0;
-  }
-
-  const findFirstDense = (arr, start, end, dir) => {
-    const sustain = 5;
-    let i = start;
-    while (dir > 0 ? i < end : i >= end) {
-      let dense = 0;
-      const limit = dir > 0 ? Math.min(i + sustain, end) : Math.max(i - sustain, end);
-      for (let j = i; dir > 0 ? j < limit : j > limit; j += dir) {
-        if (arr[j] > 0.005) dense++;
-      }
-      if (dense >= sustain * 0.4) return i;
-      i += dir;
-    }
-    return dir > 0 ? end : start;
+  // 如果没有预定义，使用保守估计
+  const w = frameImg.naturalWidth;
+  const h = frameImg.naturalHeight;
+  return {
+    left: Math.round(w * 0.12),
+    top: Math.round(h * 0.14),
+    right: Math.round(w * 0.94),
+    bottom: Math.round(h * 0.96),
   };
-
-  const denseRows = rowDensity.filter(d => d > 0.005).length;
-  const denseCols = colDensity.filter(d => d > 0.005).length;
-
-  let left, top, right, bottom;
-  if ((denseRows / height) > 0.9 && (denseCols / width) > 0.7) {
-    const mx = Math.round(width * 0.06);
-    const my = Math.round(height * 0.06);
-    left = mx; top = my; right = width - mx; bottom = height - my;
-  } else {
-    top    = findFirstDense(rowDensity, 0, height, 1);
-    bottom = findFirstDense(rowDensity, height - 1, 0, -1);
-    left   = findFirstDense(colDensity, 0, width, 1);
-    right  = findFirstDense(colDensity, width - 1, 0, -1);
-  }
-
-  left   = Math.max(0, left);
-  top    = Math.max(0, top);
-  right  = Math.min(width - 1, right);
-  bottom = Math.min(height - 1, bottom);
-
-  const iw = right - left, ih = bottom - top;
-  if (iw < width * 0.2 || ih < height * 0.2 || iw <= 0 || ih <= 0) {
-    return {
-      left: Math.round(width * 0.1), top: Math.round(height * 0.1),
-      right: Math.round(width * 0.9), bottom: Math.round(height * 0.9),
-    };
-  }
-  return { left, top, right, bottom };
-}
-
-export function getFrameBounds(frameImg) {
-  const key = frameImg.src;
-  if (boundsCache.has(key)) return boundsCache.get(key);
-
-  const canvas = document.createElement('canvas');
-  canvas.width = frameImg.naturalWidth;
-  canvas.height = frameImg.naturalHeight;
-  const ctx = canvas.getContext('2d');
-  ctx.drawImage(frameImg, 0, 0);
-
-  let bounds;
-  try {
-    const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
-    bounds = findPuzzleBounds(imageData, canvas.width, canvas.height);
-  } catch (e) {
-    const mx = Math.round(canvas.width * 0.1);
-    const my = Math.round(canvas.height * 0.1);
-    bounds = { left: mx, top: my, right: canvas.width - mx, bottom: canvas.height - my };
-  }
-  boundsCache.set(key, bounds);
-  return bounds;
 }
 
 /**
- * 将已处理好的拼图图片合成到相框中
+ * 将拼图合成到相框中（像素级精确合成）
  *
- * 流程：
- *   1. 绘制完整相框到主画布
- *   2. 计算内框在画布上的位置
- *   3. 用 contain-fit 将拼图图片缩放到内框内（完整可见，不裁剪）
- *   4. multiply 叠加切割线纹理
+ * 像素级合成原理：
+ *   对相框内框区域的每个像素：
+ *     - 如果相框像素属于"白板区域"（亮度高）→ 用用户拼图像素替换
+ *     - 如果相框像素属于"切割线区域"（亮度低）→ 保留相框原像素
+ *     - 过渡区域 → 线性混合
  *
- * @param {CanvasRenderingContext2D} ctx - 输出上下文
- * @param {HTMLCanvasElement} puzzleCanvas - 已用 renderImage 处理好的拼图画布
+ * @param {CanvasRenderingContext2D} ctx - 输出画布上下文
+ * @param {HTMLCanvasElement} puzzleCanvas - 已渲染好的拼图画布（renderImage 输出）
  * @param {HTMLImageElement} frameImg - 相框图片
- * @param {{left,top,right,bottom}} bounds - 内框边界（原始相片坐标）
- * @param {number} canvasW - 输出画布宽度
- * @param {number} canvasH - 输出画布高度
+ * @param {{left,top,right,bottom}} bounds - 内框边界
+ * @param {number} canvasW - 输出宽度
+ * @param {number} canvasH - 输出高度
+ * @param {HTMLImageElement} [userImage] - 用户原始图片（可选，用于生成拼图）
+ * @param {object} [imgState] - 渲染参数（用于内置渲染）
  */
 export function compositeFramedImage(ctx, puzzleCanvas, frameImg, bounds, canvasW, canvasH) {
   const fw = frameImg.naturalWidth;
@@ -152,10 +85,10 @@ export function compositeFramedImage(ctx, puzzleCanvas, frameImg, bounds, canvas
   ctx.canvas.width = canvasW;
   ctx.canvas.height = canvasH;
 
-  // ---- 1. 绘制完整相框 ----
+  // ========== 1. 绘制完整相框 ==========
   ctx.drawImage(frameImg, 0, 0, canvasW, canvasH);
 
-  // ---- 2. 计算内框在画布上的坐标 ----
+  // ========== 2. 计算内框在画布上的位置 ==========
   const scaleX = canvasW / fw;
   const scaleY = canvasH / fh;
   const iL = Math.round(bounds.left * scaleX);
@@ -164,62 +97,86 @@ export function compositeFramedImage(ctx, puzzleCanvas, frameImg, bounds, canvas
   const iB = Math.round(bounds.bottom * scaleY);
   const iw = iR - iL;
   const ih = iB - iT;
-  if (iw <= 2 || ih <= 2) return;
+  if (iw <= 4 || ih <= 4) return;
 
-  // ---- 3. 离屏画布 — 拼图图片 contain-fit 到内框 ----
+  // ========== 3. 获取画布像素数据（含相框内框区域） ==========
+  let framePixels;
+  try {
+    framePixels = ctx.getImageData(iL, iT, iw, ih);
+  } catch (e) {
+    return; // getImageData 失败时跳过合成
+  }
+
+  // ========== 4. 创建离屏画布 — 拼图图片 contain-fit 到内框大小 ==========
   const puzW = puzzleCanvas.width;
   const puzH = puzzleCanvas.height;
   const puzAspect = puzW / puzH;
   const innerAspect = iw / ih;
 
-  // contain-fit: 拼图完整显示在内框内（不裁剪）
+  // contain-fit：拼图完整显示在内框内
   let dW, dH, dX, dY;
   if (puzAspect > innerAspect) {
-    // 拼图更宽 → 以宽为准
     dW = iw;
     dH = iw / puzAspect;
     dX = 0;
     dY = (ih - dH) / 2;
   } else {
-    // 拼图更高 → 以高为准
     dH = ih;
     dW = ih * puzAspect;
     dX = (iw - dW) / 2;
     dY = 0;
   }
 
-  // ---- 4. 离屏画布 — 拼图叠加上内框纹理（切割线） ----
-  const layerCanvas = document.createElement('canvas');
-  layerCanvas.width = iw;
-  layerCanvas.height = ih;
-  const lCtx = layerCanvas.getContext('2d');
+  const puzDestCanvas = document.createElement('canvas');
+  puzDestCanvas.width = iw;
+  puzDestCanvas.height = ih;
+  const puzDestCtx = puzDestCanvas.getContext('2d');
+  puzDestCtx.drawImage(puzzleCanvas, 0, 0, puzW, puzH, dX, dY, dW, dH);
 
-  // 先填充亮色（multiply 时白色不改变下方）
-  lCtx.fillStyle = '#FFFFFF';
-  lCtx.fillRect(0, 0, iw, ih);
+  const puzzlePixels = puzDestCtx.getImageData(0, 0, iw, ih);
 
-  // 绘制拼图（contain-fit 到内框大小）
-  lCtx.drawImage(puzzleCanvas, 0, 0, puzW, puzH, dX, dY, dW, dH);
+  // ========== 5. 像素级合成 ==========
+  // 遍历内框区域的每个像素
+  const data = framePixels.data;
+  const puzData = puzzlePixels.data;
+  const output = new Uint8ClampedArray(data.length);
+  const len = data.length;
 
-  // 截取相框内框纹理（切割线）
-  const fiCanvas = document.createElement('canvas');
-  fiCanvas.width = iw;
-  fiCanvas.height = ih;
-  const fiCtx = fiCanvas.getContext('2d');
-  fiCtx.drawImage(frameImg,
-    bounds.left, bounds.top, bounds.right - bounds.left, bounds.bottom - bounds.top,
-    0, 0, iw, ih
-  );
+  for (let i = 0; i < len; i += 4) {
+    const fR = data[i];
+    const fG = data[i + 1];
+    const fB = data[i + 2];
 
-  // multiply 叠加切割线
-  lCtx.globalCompositeOperation = 'multiply';
-  lCtx.drawImage(fiCanvas, 0, 0);
-  lCtx.globalCompositeOperation = 'source-over';
+    // 计算相框像素的亮度
+    const brightness = (fR + fG + fB) / 3;
 
-  // ---- 5. 绘制到主画布的内框区域 ----
-  ctx.drawImage(layerCanvas, iL, iT);
+    if (brightness >= 195) {
+      // 亮色区域（白板表面）→ 完全替换为用户拼图像素
+      output[i] = puzData[i];
+      output[i + 1] = puzData[i + 1];
+      output[i + 2] = puzData[i + 2];
+      output[i + 3] = puzData[i + 3] !== undefined ? puzData[i + 3] : 255;
+    } else if (brightness <= 90) {
+      // 暗色区域（切割线/阴影）→ 完全保留相框像素
+      output[i] = fR;
+      output[i + 1] = fG;
+      output[i + 2] = fB;
+      output[i + 3] = 255;
+    } else {
+      // 过渡区域 → 线性混合
+      const t = (brightness - 90) / (195 - 90); // 0~1
+      output[i]     = puzData[i]     * t + fR * (1 - t);
+      output[i + 1] = puzData[i + 1] * t + fG * (1 - t);
+      output[i + 2] = puzData[i + 2] * t + fB * (1 - t);
+      output[i + 3] = 255;
+    }
+  }
+
+  // ========== 6. 写回画布 ==========
+  const blended = new ImageData(output, iw, ih);
+  ctx.putImageData(blended, iL, iT);
 }
 
 export function clearFrameBoundsCache() {
-  boundsCache.clear();
+  // boundsCache no longer needed since we use hardcoded values
 }
