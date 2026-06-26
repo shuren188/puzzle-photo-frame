@@ -390,14 +390,21 @@ export class App {
         dispH = Math.min(pvh, 680);
         dispW = Math.round(dispH * frameAspect);
       }
-      // 先渲染拼图到临时 canvas
-      const tempCanvas = document.createElement('canvas');
-      const tempCtx = tempCanvas.getContext('2d');
-      renderImage(tempCtx, this.state.image, Math.round(dispW * 0.7), Math.round(dispH * 0.7), {
-        zoom: this.state.zoom, offsetX: this.state.offsetX, offsetY: this.state.offsetY,
-        rotation: this.state.rotation, fillColor: this.state.fillColor,
-      });
-      compositeFramedImage(ctx, tempCanvas, this.state.frameImage, this.state.frameBounds, dispW, dispH);
+      // 直接用新 API 合成（不再需要 tempCanvas）
+      compositeFramedImage(
+        ctx,
+        this.state.image,
+        {
+          zoom: this.state.zoom,
+          offsetX: this.state.offsetX,
+          offsetY: this.state.offsetY,
+          rotation: this.state.rotation,
+          fillColor: this.state.fillColor,
+        },
+        this.state.frameImage,
+        this.state.frameBounds,
+        dispW, dispH
+      );
     } else {
       // 无相框，显示拼图原图
       renderImage(ctx, this.state.image, pvw, pvh, {
@@ -588,31 +595,21 @@ export class App {
     canvas.height = pvh;
     this.els.canvasWrapper.style.height = pvh + 'px';
 
-    // 将用户图片 renderImage 到临时 canvas（处理 zoom/offset/rotation/padding）
-    // 使用足够大的尺寸，保证 cover 到内框时有足够分辨率
-    const tempCanvas = document.createElement('canvas');
-    const tempCtx = tempCanvas.getContext('2d');
-    const eff = this.getEffectiveSize();
-    const targetAspect = eff.cmW / eff.cmH;
-
-    // 计算在最终 canvas 上内框的实际像素尺寸
-    const iwPx = Math.round(pvw * (this.state.frameBounds.right - this.state.frameBounds.left) / fw);
-    const ihPx = Math.round(pvh * (this.state.frameBounds.bottom - this.state.frameBounds.top) / fh);
-
-    // 内框在 canvas 上的比例
-    const innerRatio = iwPx / ihPx;
-
-    // 用 renderImage 处理用户图片（含缩放/偏移/旋转/填充）
-    // 尺寸取内框的 2 倍，确保 cover 裁剪足够清晰
-    const puzzleW = Math.round(Math.max(iwPx, ihPx) * 2 * targetAspect);
-    const puzzleH = Math.round(Math.max(iwPx, ihPx) * 2);
-    renderImage(tempCtx, this.state.image, puzzleW, puzzleH, {
-      zoom: this.state.zoom, offsetX: this.state.offsetX, offsetY: this.state.offsetY,
-      rotation: this.state.rotation, fillColor: this.state.fillColor,
-    });
-
-    // 合成到相框
-    compositeFramedImage(ctx, tempCanvas, this.state.frameImage, this.state.frameBounds, pvw, pvh);
+    // 直接从用户原始图片合成到相框（避免中间 renderImage 的 pad 干扰）
+    compositeFramedImage(
+      ctx,
+      this.state.image,
+      {
+        zoom: this.state.zoom,
+        offsetX: this.state.offsetX,
+        offsetY: this.state.offsetY,
+        rotation: this.state.rotation,
+        fillColor: this.state.fillColor,
+      },
+      this.state.frameImage,
+      this.state.frameBounds,
+      pvw, pvh
+    );
   }
 
   async handleDownload() {
