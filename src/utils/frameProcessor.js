@@ -3,12 +3,9 @@
  * 将拼图图片合成到相框效果图中
  *
  * 合成原理：
- *   1. 绘制相框到主画布
- *   2. 计算内框区域在画布上的位置
- *   3. 离屏画布 A：将用户图片 cover-fit 到内框大小
- *   4. 离屏画布 B：截取相框内框的切割线纹理
- *   5. multiply 混合 B→A：保留切割线，白板区域透出用户图片
- *   6. 将 A 绘制到主画布的内框位置（覆盖白板，保留边框）
+ *   1. 先用 renderImage 将用户图片处理成拼图图（含填充色/缩放/偏移/旋转）
+ *   2. 再将拼图图片 contain-fit 到相框内框区域
+ *   3. multiply 叠加切割线纹理
  */
 
 const boundsCache = new Map();
@@ -40,29 +37,25 @@ export function findPuzzleBounds(imageData, width, height) {
   const data = imageData.data;
   const step = Math.max(2, Math.floor(Math.min(width, height) / 400));
 
-  // 行边缘密度
   const rowDensity = new Float32Array(height);
   for (let y = 0; y < height; y++) {
     let count = 0, total = 0;
     for (let x = 0; x < width - step; x += step) {
       const i1 = (y * width + x) * 4;
       const i2 = (y * width + x + step) * 4;
-      const diff = Math.abs(data[i1] - data[i2]) + Math.abs(data[i1+1] - data[i2+1]) + Math.abs(data[i1+2] - data[i2+2]);
-      if (diff > 50) count++;
+      if (Math.abs(data[i1] - data[i2]) + Math.abs(data[i1+1] - data[i2+1]) + Math.abs(data[i1+2] - data[i2+2]) > 50) count++;
       total++;
     }
     rowDensity[y] = total > 0 ? count / total : 0;
   }
 
-  // 列边缘密度
   const colDensity = new Float32Array(width);
   for (let x = 0; x < width; x++) {
     let count = 0, total = 0;
     for (let y = 0; y < height - step; y += step) {
       const i1 = (y * width + x) * 4;
       const i2 = ((y + step) * width + x) * 4;
-      const diff = Math.abs(data[i1] - data[i2]) + Math.abs(data[i1+1] - data[i2+1]) + Math.abs(data[i1+2] - data[i2+2]);
-      if (diff > 50) count++;
+      if (Math.abs(data[i1] - data[i2]) + Math.abs(data[i1+1] - data[i2+1]) + Math.abs(data[i1+2] - data[i2+2]) > 50) count++;
       total++;
     }
     colDensity[x] = total > 0 ? count / total : 0;
@@ -137,104 +130,78 @@ export function getFrameBounds(frameImg) {
 }
 
 /**
- * 将用户图片合成到相框中
+ * 将已处理好的拼图图片合成到相框中
  *
- * 按以下步骤正确合成：
- *   1. 主画布：绘制完整相框
- *   2. 计算内框在画布上的像素坐标
- *   3. 从原始用户图片（puzzleSource = HTMLImageElement）直接 cover-fit 绘制到内框大小
- *      → 避免经过 renderImage 的 pad 中间步骤导致的对齐问题
- *   4. 叠加相框内框的切割线纹理（multiply 混合模式）
- *   5. 将带纹理的用户图片绘制到主画布的内框区域
+ * 流程：
+ *   1. 绘制完整相框到主画布
+ *   2. 计算内框在画布上的位置
+ *   3. 用 contain-fit 将拼图图片缩放到内框内（完整可见，不裁剪）
+ *   4. multiply 叠加切割线纹理
  *
  * @param {CanvasRenderingContext2D} ctx - 输出上下文
- * @param {HTMLImageElement} userImage - 用户原始图片元素（直接使用，不经过 renderImage）
- * @param {object} imgState - 渲染参数 { zoom, offsetX, offsetY, rotation, fillColor }
+ * @param {HTMLCanvasElement} puzzleCanvas - 已用 renderImage 处理好的拼图画布
  * @param {HTMLImageElement} frameImg - 相框图片
  * @param {{left,top,right,bottom}} bounds - 内框边界（原始相片坐标）
  * @param {number} canvasW - 输出画布宽度
  * @param {number} canvasH - 输出画布高度
  */
-export function compositeFramedImage(ctx, userImage, imgState, frameImg, bounds, canvasW, canvasH) {
+export function compositeFramedImage(ctx, puzzleCanvas, frameImg, bounds, canvasW, canvasH) {
   const fw = frameImg.naturalWidth;
   const fh = frameImg.naturalHeight;
 
   ctx.canvas.width = canvasW;
   ctx.canvas.height = canvasH;
 
-  // ---- 步骤 1: 绘制完整相框 ----
+  // ---- 1. 绘制完整相框 ----
   ctx.drawImage(frameImg, 0, 0, canvasW, canvasH);
 
-  // ---- 步骤 2: 计算内框在画布上的坐标 ----
+  // ---- 2. 计算内框在画布上的坐标 ----
   const scaleX = canvasW / fw;
   const scaleY = canvasH / fh;
   const iL = Math.round(bounds.left * scaleX);
   const iT = Math.round(bounds.top * scaleY);
-  const iw = Math.round((bounds.right - bounds.left) * scaleX);
-  const ih = Math.round((bounds.bottom - bounds.top) * scaleY);
+  const iR = Math.round(bounds.right * scaleX);
+  const iB = Math.round(bounds.bottom * scaleY);
+  const iw = iR - iL;
+  const ih = iB - iT;
   if (iw <= 2 || ih <= 2) return;
 
-  // ---- 步骤 3: 离屏画布 — 用户图片（cover-fit 到内框） ----
-  // 直接从用户原始图绘制，考虑 zoom/offset/rotation
-  const uCanvas = document.createElement('canvas');
-  uCanvas.width = iw;
-  uCanvas.height = ih;
-  const uCtx = uCanvas.getContext('2d');
-
-  // 先填充背景色（极暗色，multiply 后不影响）
-  uCtx.fillStyle = '#000000';
-  uCtx.fillRect(0, 0, iw, ih);
-
-  // 计算 cover-fit：用户图片适配内框
-  const imgW = userImage.naturalWidth;
-  const imgH = userImage.naturalHeight;
-  const imgAspect = imgW / imgH;
+  // ---- 3. 离屏画布 — 拼图图片 contain-fit 到内框 ----
+  const puzW = puzzleCanvas.width;
+  const puzH = puzzleCanvas.height;
+  const puzAspect = puzW / puzH;
   const innerAspect = iw / ih;
 
-  let drawW, drawH, drawX, drawY;
-  if (imgAspect > innerAspect) {
-    drawH = ih;
-    drawW = ih * imgAspect;
-    drawX = (iw - drawW) / 2;
-    drawY = 0;
+  // contain-fit: 拼图完整显示在内框内（不裁剪）
+  let dW, dH, dX, dY;
+  if (puzAspect > innerAspect) {
+    // 拼图更宽 → 以宽为准
+    dW = iw;
+    dH = iw / puzAspect;
+    dX = 0;
+    dY = (ih - dH) / 2;
   } else {
-    drawW = iw;
-    drawH = iw / imgAspect;
-    drawX = 0;
-    drawY = (ih - drawH) / 2;
+    // 拼图更高 → 以高为准
+    dH = ih;
+    dW = ih * puzAspect;
+    dX = (iw - dW) / 2;
+    dY = 0;
   }
 
-  // 应用 zoom
-  const zoomFactor = (imgState.zoom || 100) / 100;
-  const zoomedW = drawW * zoomFactor;
-  const zoomedH = drawH * zoomFactor;
-  let zDrawX = drawX - (zoomedW - drawW) / 2;
-  let zDrawY = drawY - (zoomedH - drawH) / 2;
+  // ---- 4. 离屏画布 — 拼图叠加上内框纹理（切割线） ----
+  const layerCanvas = document.createElement('canvas');
+  layerCanvas.width = iw;
+  layerCanvas.height = ih;
+  const lCtx = layerCanvas.getContext('2d');
 
-  // 应用 offset（百分比 → 像素）
-  const maxOffX = (zoomedW - iw) / 2;
-  const maxOffY = (zoomedH - ih) / 2;
-  zDrawX -= maxOffX * (imgState.offsetX || 0) / 100;
-  zDrawY -= maxOffY * (imgState.offsetY || 0) / 100;
+  // 先填充亮色（multiply 时白色不改变下方）
+  lCtx.fillStyle = '#FFFFFF';
+  lCtx.fillRect(0, 0, iw, ih);
 
-  // 旋转
-  const rotation = (imgState.rotation || 0) % 360;
-  let needsRotation = rotation !== 0;
+  // 绘制拼图（contain-fit 到内框大小）
+  lCtx.drawImage(puzzleCanvas, 0, 0, puzW, puzH, dX, dY, dW, dH);
 
-  if (needsRotation) {
-    uCtx.save();
-    uCtx.translate(iw / 2, ih / 2);
-    uCtx.rotate(rotation * Math.PI / 180);
-    uCtx.translate(-iw / 2, -ih / 2);
-  }
-
-  uCtx.drawImage(userImage, zDrawX, zDrawY, zoomedW, zoomedH);
-
-  if (needsRotation) {
-    uCtx.restore();
-  }
-
-  // ---- 步骤 4: 从相框截取内框纹理（含切割线）并 multiply 叠加 ----
+  // 截取相框内框纹理（切割线）
   const fiCanvas = document.createElement('canvas');
   fiCanvas.width = iw;
   fiCanvas.height = ih;
@@ -244,13 +211,13 @@ export function compositeFramedImage(ctx, userImage, imgState, frameImg, bounds,
     0, 0, iw, ih
   );
 
-  uCtx.save();
-  uCtx.globalCompositeOperation = 'multiply';
-  uCtx.drawImage(fiCanvas, 0, 0);
-  uCtx.restore();
+  // multiply 叠加切割线
+  lCtx.globalCompositeOperation = 'multiply';
+  lCtx.drawImage(fiCanvas, 0, 0);
+  lCtx.globalCompositeOperation = 'source-over';
 
-  // ---- 步骤 5: 将合成结果绘制到主画布的内框区域 ----
-  ctx.drawImage(uCanvas, iL, iT);
+  // ---- 5. 绘制到主画布的内框区域 ----
+  ctx.drawImage(layerCanvas, iL, iT);
 }
 
 export function clearFrameBoundsCache() {

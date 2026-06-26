@@ -68,6 +68,6 @@ export const FRAME_CONFIG = {
   verticalDir: '带框效果图-竖版',
 };
 
-/** 默认是否开启相框（默认开启） */
-export const DEFAULT_FRAME_ENABLED = true;
+/** 默认是否开启相框（默认关闭） */
+export const DEFAULT_FRAME_ENABLED = false;
 
