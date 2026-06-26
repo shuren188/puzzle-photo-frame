@@ -219,22 +219,22 @@ export class App {
     const url = getFrameUrl(this.state.selectedSize.name, eff.isLandscape);
     if (!url) { this.state.frameImage = null; this.state.frameBounds = null; return; }
 
-    // 如果已加载相同 URL，无需重新加载
-    if (this.state.frameLoadedUrl === url) return;
+    // 已加载相同 URL 且成功 → 无需重复加载
+    if (this.state.frameLoadedUrl === url && this.state.frameImage) return;
 
     this.state.frameLoading = true;
-    this.state.frameLoadedUrl = null;
     try {
       const frameImg = await loadFrameImage(url);
       this.state.frameImage = frameImg;
-      this.state.frameLoadedUrl = url;
+      // getFrameBounds 成功后才标记已加载（防止失败后无法重试）
       this.state.frameBounds = getFrameBounds(frameImg);
-      // 加载完成后重新渲染（显示带相框效果）
+      this.state.frameLoadedUrl = url;
       this.scheduleRender();
     } catch (err) {
       console.error('相框加载失败:', err);
       this.state.frameImage = null;
       this.state.frameBounds = null;
+      this.state.frameLoadedUrl = null; // 允许下次重试
     }
     this.state.frameLoading = false;
   }
@@ -470,6 +470,7 @@ export class App {
       this.state.fillColor = DEFAULTS.fillColor;
       this.state.frameImage = null;
       this.state.frameBounds = null;
+      this.state.frameLoadedUrl = null;
       this.els.zoomSlider.value = DEFAULTS.zoom;
       this.els.zoomValue.textContent = DEFAULTS.zoom + '%';
       this.els.offsetXSlider.value = DEFAULTS.offsetX;
