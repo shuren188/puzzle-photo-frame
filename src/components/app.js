@@ -402,8 +402,8 @@ export class App {
         zoom: this.state.zoom, offsetX: this.state.offsetX, offsetY: this.state.offsetY,
         rotation: this.state.rotation, fillColor: this.state.fillColor,
       });
-      // 合成到相框
-      compositeFramedImage(ctx, puzzleCanvas, this.state.frameImage, this.state.frameBounds, dispW, dispH);
+      // 合成到相框（边框叠加法）
+      compositeFramedImage(ctx, puzzleCanvas, this.state.fillColor, this.state.frameImage, this.state.frameBounds, dispW, dispH);
     } else {
       // 无相框，显示拼图原图
       renderImage(ctx, this.state.image, pvw, pvh, {
@@ -608,8 +608,8 @@ export class App {
       rotation: this.state.rotation, fillColor: this.state.fillColor,
     });
 
-    // ---- 第二步：将拼图图片合成到相框 ----
-    compositeFramedImage(ctx, puzzleCanvas, this.state.frameImage, this.state.frameBounds, pvw, pvh);
+    // ---- 第二步：将拼图图片合成到相框（边框叠加法） ----
+    compositeFramedImage(ctx, puzzleCanvas, this.state.fillColor, this.state.frameImage, this.state.frameBounds, pvw, pvh);
   }
 
   async handleDownload() {
