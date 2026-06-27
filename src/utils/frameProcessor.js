@@ -1,16 +1,19 @@
 /**
- * 相框处理模块
+ * 相框处理模块 v3.0.0
  *
- * 方案：拼图铺底 + 相框边框覆盖
+ * 方案：照片直绘内框 + 相框叠加层（含切割线）
  *
  * 预处理（相框加载时）：
- *   用 getImageData + alpha 将相框内框区域设为透明 → 生成边框蒙版 canvas
+ *   生成 frameOverlay：
+ *   - 边框区域：保留原样（不透明）
+ *   - 内框区域：白板(亮度≥195)→透明，切割线(亮度≤80)→保留(70%透明度)
  *
- * 合成（每次渲染时，仅两次 drawImage）：
- *   Step 1: 拼图（pad模式）铺满整个画布
- *   Step 2: 边框蒙版盖在最上层（内框透明，让拼图透出）
- *
- * 不再使用任何 composite 混合操作。
+ * 渲染（每次重绘）：
+ *   1. 清空画布 → 填充背景色
+ *   2. 计算照片在内框的 cover-fit 坐标
+ *   3. drawImage 照片到内框区域
+ *   4. drawImage frameOverlay 盖在最上层
+ *      → 边框覆盖照片边缘，切割线半透明叠在照片上，白板透明让照片透出
  */
 
 const FILE_MAP = {
@@ -57,12 +60,12 @@ export function getFrameBounds(frameImg, sizeName, isLandscape) {
 }
 
 /**
- * 预处理：生成边框蒙版 canvas（内框透明）
+ * 预处理：生成相框叠加层
  * @param {HTMLImageElement} frameImg
  * @param {{left,top,right,bottom}} bounds
- * @returns {HTMLCanvasElement}
+ * @returns {HTMLCanvasElement} RGBA canvas（边框保留 + 内框切割线半透明 + 内框白板透明）
  */
-export function createBorderMask(frameImg, bounds) {
+export function createFrameOverlay(frameImg, bounds) {
   const w = frameImg.naturalWidth;
   const h = frameImg.naturalHeight;
   const canvas = document.createElement('canvas');
@@ -74,11 +77,22 @@ export function createBorderMask(frameImg, bounds) {
   const imageData = ctx.getImageData(0, 0, w, h);
   const data = imageData.data;
 
-  // 内框区域 alpha = 0（透明）
   for (let y = bounds.top; y < bounds.bottom; y++) {
-    const rowStart = y * w;
     for (let x = bounds.left; x < bounds.right; x++) {
-      data[(rowStart + x) * 4 + 3] = 0;
+      const idx = (y * w + x) * 4;
+      const brightness = (data[idx] + data[idx + 1] + data[idx + 2]) / 3;
+
+      if (brightness >= 195) {
+        // 白板/亮色 → 完全透明（让用户照片透出）
+        data[idx + 3] = 0;
+      } else if (brightness <= 80) {
+        // 深色切割线 → 保留原色，70%透明度
+        data[idx + 3] = 178;
+      } else {
+        // 过渡区 → 按亮度线性渐变透明度
+        const alpha = Math.round(178 * (1 - (brightness - 80) / 115));
+        data[idx + 3] = Math.max(0, Math.min(255, alpha));
+      }
     }
   }
 
@@ -87,41 +101,106 @@ export function createBorderMask(frameImg, bounds) {
 }
 
 /**
- * 将拼图与相框合成（两步纯 drawImage）
+ * 相框模式渲染函数
+ *
+ * 专用于当相框开启时的渲染。无相框模式使用 app.js 中的 renderImage。
  *
  * @param {CanvasRenderingContext2D} ctx
- * @param {HTMLCanvasElement} puzzleCanvas - renderImage 输出的拼图画布
- * @param {HTMLCanvasElement} borderMask - createBorderMask 输出的边框蒙版
- * @param {number} canvasW
- * @param {number} canvasH
+ * @param {number} canvasW - 输出画布宽度
+ * @param {number} canvasH - 输出画布高度
+ * @param {HTMLImageElement} userImg - 用户原始图片
+ * @param {object} imgState - { zoom, offsetX, offsetY, rotation, fillColor }
+ * @param {HTMLCanvasElement} frameOverlay - createFrameOverlay 的输出
+ * @param {{left,top,right,bottom}} bounds - 内框边界
  */
-export function compositeFramedImage(ctx, puzzleCanvas, borderMask, canvasW, canvasH) {
+export function renderFramed(ctx, canvasW, canvasH, userImg, imgState, frameOverlay, bounds) {
   ctx.canvas.width = canvasW;
   ctx.canvas.height = canvasH;
 
-  // Step 1: 绘制拼图铺满整个画布（cover-fitted）
-  const puzW = puzzleCanvas.width;
-  const puzH = puzzleCanvas.height;
-  const puzA = puzW / puzH;
-  const ca = canvasW / canvasH;
+  // Step 1: 清空画布
+  ctx.clearRect(0, 0, canvasW, canvasH);
 
-  let dW, dH, dX, dY;
-  if (puzA > ca) {
-    dW = canvasW;
-    dH = Math.round(canvasW / puzA);
-    dX = 0;
-    dY = Math.round((canvasH - dH) / 2);
+  // Step 2: 填充背景色
+  ctx.fillStyle = imgState.fillColor || '#FFFFFF';
+  ctx.fillRect(0, 0, canvasW, canvasH);
+
+  // 计算内框在画布上的像素坐标
+  const fw = frameOverlay.width;
+  const fh = frameOverlay.height;
+  const sx = canvasW / fw;
+  const sy = canvasH / fh;
+  const iL = Math.round(bounds.left * sx);
+  const iT = Math.round(bounds.top * sy);
+  const iR = Math.round(bounds.right * sx);
+  const iB = Math.round(bounds.bottom * sy);
+  const iw = iR - iL;
+  const ih = iB - iT;
+
+  if (iw > 2 && ih > 2) {
+    // Step 3: 计算用户照片在内框区域的 cover-fit 坐标
+    const imgW = userImg.naturalWidth;
+    const imgH = userImg.naturalHeight;
+    // 考虑旋转
+    const nr = imgState.rotation % 180 !== 0;
+    const effW = nr ? imgH : imgW;
+    const effH = nr ? imgW : imgH;
+    const imgAspect = effW / effH;
+    const innerAspect = iw / ih;
+
+    let srcX, srcY, srcW, srcH;
+    if (imgAspect > innerAspect) {
+      srcW = effH * innerAspect;  // 以高度为准，裁剪左右
+      srcH = effH;
+      srcX = (effW - srcW) / 2;
+      srcY = 0;
+    } else {
+      srcW = effW;
+      srcH = effW / innerAspect;  // 以宽度为准，裁剪上下
+      srcX = 0;
+      srcY = (effH - srcH) / 2;
+    }
+
+    // 应用 zoom
+    const zf = (imgState.zoom || 100) / 100;
+    const zSrcW = srcW / zf;
+    const zSrcH = srcH / zf;
+    let zSrcX = srcX + (srcW - zSrcW) / 2;
+    let zSrcY = srcY + (srcH - zSrcH) / 2;
+
+    // 应用 offset
+    const maxOffX = (zSrcW - srcW) / 2;
+    const maxOffY = (zSrcH - srcH) / 2;
+    zSrcX += maxOffX * ((imgState.offsetX || 0) / 100);
+    zSrcY += maxOffY * ((imgState.offsetY || 0) / 100);
+
+    // 如果旋转，旋转源图坐标
+    const finalSrcX = nr ? zSrcY : zSrcX;
+    const finalSrcY = nr ? zSrcX : zSrcY;
+    const finalSrcW = nr ? zSrcH : zSrcW;
+    const finalSrcH = nr ? zSrcW : zSrcH;
+
+    // 处理旋转
+    const rotation = (imgState.rotation || 0) % 360;
+    if (rotation !== 0) {
+      ctx.save();
+      ctx.translate(iL + iw / 2, iT + ih / 2);
+      ctx.rotate(rotation * Math.PI / 180);
+      ctx.translate(-(iL + iw / 2), -(iT + ih / 2));
+    }
+
+    // 绘制用户照片到内框区域
+    ctx.drawImage(userImg, finalSrcX, finalSrcY, finalSrcW, finalSrcH, iL, iT, iw, ih);
+
+    if (rotation !== 0) {
+      ctx.restore();
+    }
+
+    // Step 4: 相框叠加层盖在最上层（边框+切割线，白板透明）
+    ctx.drawImage(frameOverlay, 0, 0, canvasW, canvasH);
   } else {
-    dH = canvasH;
-    dW = Math.round(canvasH * puzA);
-    dX = Math.round((canvasW - dW) / 2);
-    dY = 0;
+    // 内框太小 → 只绘制相框
+    ctx.drawImage(frameOverlay, 0, 0, canvasW, canvasH);
   }
-
-  ctx.drawImage(puzzleCanvas, dX, dY, dW, dH);
-
-  // Step 2: 边框蒙版盖在最上层（内框透明）
-  ctx.drawImage(borderMask, 0, 0, canvasW, canvasH);
 }
 
 export function clearFrameBoundsCache() {}
