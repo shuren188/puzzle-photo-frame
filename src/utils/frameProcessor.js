@@ -1,7 +1,19 @@
 /**
- * 相框预览模块 v6.0.0
+ * 相框预览模块 v7.0.0
  *
- * 只做一件事：把已完成的拼图放进透明PNG相框
+ * 核心原则：
+ *   - PuzzleCanvas 尺寸 = 内框自然像素尺寸（如 1465×2021）
+ *   - 输出 Canvas 尺寸 = PNG 原始尺寸
+ *   - drawImage 全部使用 3 参数（零缩放）
+ *   - CSS 控制视觉显示大小
+ *
+ * 函数：
+ *   loadFrameImage()       — 加载相框 PNG
+ *   getFrameUrl()          — 获取相框 URL
+ *   getFrameBounds()       — 获取内框坐标
+ *   buildPuzzleCanvas()    — 唯二调用 renderImage 的地方
+ *   getNaturalInnerSize()  — 获取内框自然像素宽高
+ *   renderFrame()          — 两个 3-param drawImage
  */
 
 import { renderImage } from './imageProcessor.js';
@@ -47,46 +59,50 @@ export function getFrameBounds(sizeName, isLandscape) {
 }
 
 /**
- * 生成拼图画布（唯一调用 renderImage 的地方）
- * 预览和相框模式共用此函数
+ * 生成拼图画布（唯二调用 renderImage 的地方）
+ * @param {HTMLImageElement} img
+ * @param {number} w - 宽度（像素）
+ * @param {number} h - 高度（像素）
+ * @param {object} opts - zoom/offsetX/offsetY/rotation/fillColor
+ * @returns {HTMLCanvasElement}
  */
 export function buildPuzzleCanvas(img, w, h, opts) {
   const canvas = document.createElement('canvas');
-  canvas.width = w;
-  canvas.height = h;
-  renderImage(canvas.getContext('2d'), img, w, h, opts);
+  canvas.width = Math.round(w);
+  canvas.height = Math.round(h);
+  renderImage(canvas.getContext('2d'), img, canvas.width, canvas.height, opts);
   return canvas;
 }
 
 /**
- * 计算内框在画布上的坐标（纯浮点，不取整）
+ * 获取内框自然像素尺寸
+ * 用于 buildPuzzleCanvas 的 w, h 参数
  */
-export function calcInnerRect(canvasW, canvasH, frameNaturalW, frameNaturalH, bounds) {
-  const sx = canvasW / frameNaturalW;
-  const sy = canvasH / frameNaturalH;
+export function getNaturalInnerSize(bounds) {
   return {
-    left: bounds.left * sx,
-    top: bounds.top * sy,
-    width: (bounds.right - bounds.left) * sx,
-    height: (bounds.bottom - bounds.top) * sy,
+    width: bounds.right - bounds.left,
+    height: bounds.bottom - bounds.top,
   };
 }
 
 /**
- * 最终合成：两个 drawImage
- * 不做任何图片编辑、缩放计算、比例适配
+ * 最终合成：拼图 + 相框
+ * 全部使用 3 参数 drawImage（零缩放）
+ *
+ * Canvas 尺寸 = PNG 原始尺寸
+ * drawImage(puzzle, left, top) — puzzle 尺寸 = 内框自然尺寸
+ * drawImage(frame, 0, 0) — frame 尺寸 = PNG 原始尺寸
  */
-export function renderFrame(ctx, canvasW, canvasH, puzzleCanvas, frameImg, innerRect) {
-  ctx.canvas.width = Math.round(canvasW);
-  ctx.canvas.height = Math.round(canvasH);
+export function renderFrame(ctx, puzzleCanvas, frameImg, bounds) {
+  const fw = frameImg.naturalWidth;
+  const fh = frameImg.naturalHeight;
 
-  // drawImage 1: 拼图完整映射到内框区域
-  ctx.drawImage(
-    puzzleCanvas,
-    0, 0, puzzleCanvas.width, puzzleCanvas.height,
-    innerRect.left, innerRect.top, innerRect.width, innerRect.height
-  );
+  ctx.canvas.width = fw;
+  ctx.canvas.height = fh;
 
-  // drawImage 2: 透明PNG相框覆盖
-  ctx.drawImage(frameImg, 0, 0, ctx.canvas.width, ctx.canvas.height);
+  // Step 1: 拼图直接贴入内框（3参数，零缩放）
+  ctx.drawImage(puzzleCanvas, bounds.left, bounds.top);
+
+  // Step 2: 透明PNG相框覆盖（3参数，零缩放）
+  ctx.drawImage(frameImg, 0, 0);
 }

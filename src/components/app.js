@@ -2,7 +2,7 @@ import { SIZES, QUALITIES, PRESET_COLORS, DEFAULTS, DRAG_SENSITIVITY, DEFAULT_FR
 import { renderImage, loadImage, getPreviewSize } from '../utils/imageProcessor.js';
 import { downloadImage, getOutputFilename } from '../utils/download.js';
 import { ColorPicker } from './ColorPicker.js';
-import { loadFrameImage, getFrameUrl, getFrameBounds, buildPuzzleCanvas, calcInnerRect, renderFrame } from '../utils/frameProcessor.js';
+import { loadFrameImage, getFrameUrl, getFrameBounds, buildPuzzleCanvas, getNaturalInnerSize, renderFrame } from '../utils/frameProcessor.js';
 
 const PINCH_SENSITIVITY = 0.45;
 
@@ -389,22 +389,16 @@ export class App {
         dispH = Math.min(pvh, 680);
         dispW = Math.round(dispH * frameAspect);
       }
-      ctx.fillStyle = this.state.fillColor || '#FFFFFF';
-      ctx.fillRect(0, 0, dispW, dispH);
-
-      // 以内框尺寸生成拼图画布
-      const fw2 = this.state.frameImage.naturalWidth;
-      const fh2 = this.state.frameImage.naturalHeight;
-      const finnerRect = calcInnerRect(dispW, dispH, fw2, fh2, this.state.frameBounds);
-      const fpuzW = Math.round(finnerRect.width);
-      const fpuzH = Math.round(finnerRect.height);
+            // Puzzle = 内框自然像素尺寸
+      const fBounds = this.state.frameBounds;
+      const { width: fpuzW, height: fpuzH } = getNaturalInnerSize(fBounds);
       const fpuzzle = buildPuzzleCanvas(this.state.image, fpuzW, fpuzH, {
         zoom: this.state.zoom, offsetX: this.state.offsetX, offsetY: this.state.offsetY,
         rotation: this.state.rotation, fillColor: this.state.fillColor,
       });
 
-      // 合成
-      renderFrame(ctx, dispW, dispH, fpuzzle, this.state.frameImage, finnerRect);
+      // Canvas = PNG 原始尺寸，3参数drawImage零缩放合成
+      renderFrame(ctx, fpuzzle, this.state.frameImage, fBounds);
     } else {
       renderImage(ctx, this.state.image, pvw, pvh, {
         zoom: this.state.zoom, offsetX: this.state.offsetX, offsetY: this.state.offsetY,
@@ -567,40 +561,23 @@ export class App {
   renderFramed(ctx, canvas, eff) {
     if (!this.state.frameImage || !this.state.frameBounds) return;
 
-    const fw = this.state.frameImage.naturalWidth;
-    const fh = this.state.frameImage.naturalHeight;
-    const frameAspect = fw / fh;
-    let pvw, pvh;
-    if (frameAspect > 1) {
-      pvh = 200;
-      pvw = pvh * frameAspect;
-      if (pvw > 460) { pvw = 460; pvh = pvw / frameAspect; }
-    } else {
-      pvh = 200;
-      pvw = pvh * frameAspect;
-    }
+    const frameImg = this.state.frameImage;
+    const bounds = this.state.frameBounds;
 
-    canvas.width = Math.round(pvw);
-    canvas.height = Math.round(pvh);
-    this.els.canvasWrapper.style.height = Math.round(pvh) + 'px';
+    // Canvas = PNG 原始尺寸（像素级精准）
+    canvas.width = frameImg.naturalWidth;
+    canvas.height = frameImg.naturalHeight;
+    this.els.canvasWrapper.style.height = '';
 
-    // 填充背景色
-    ctx.fillStyle = this.state.fillColor || '#FFFFFF';
-    ctx.fillRect(0, 0, canvas.width, canvas.height);
-
-    // 计算内框坐标
-    const innerRect = calcInnerRect(canvas.width, canvas.height, fw, fh, this.state.frameBounds);
-
-    // 以内框尺寸生成拼图画布（renderImage一次）
-    const puzzleW = Math.round(innerRect.width);
-    const puzzleH = Math.round(innerRect.height);
-    const puzzle = buildPuzzleCanvas(this.state.image, puzzleW, puzzleH, {
+    // Puzzle = 内框自然像素尺寸（如 1465×2021）
+    const { width: puzW, height: puzH } = getNaturalInnerSize(bounds);
+    const puzzle = buildPuzzleCanvas(this.state.image, puzW, puzH, {
       zoom: this.state.zoom, offsetX: this.state.offsetX, offsetY: this.state.offsetY,
       rotation: this.state.rotation, fillColor: this.state.fillColor,
     });
 
-    // 合成：拼图精确贴入内框 + 相框覆盖
-    renderFrame(ctx, canvas.width, canvas.height, puzzle, this.state.frameImage, innerRect);
+    // 合成：3 参数 drawImage，零缩放
+    renderFrame(ctx, puzzle, frameImg, bounds);
   }
 
   async handleDownload() {
