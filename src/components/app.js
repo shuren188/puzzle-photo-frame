@@ -86,6 +86,46 @@ export class App {
     };
   }
 
+  /** 计算下载分辨率 */
+  getDownloadSize() {
+    const eff = this.getEffectiveSize();
+    const targetAspect = eff.cmW / eff.cmH;
+    const imgW = this.state.image.naturalWidth;
+    const imgH = this.state.image.naturalHeight;
+    let pxW, pxH;
+    if (imgW / imgH > targetAspect) {
+      pxW = Math.round(imgW);
+      pxH = Math.round(imgW / targetAspect);
+    } else {
+      pxH = Math.round(imgH);
+      pxW = Math.round(imgH * targetAspect);
+    }
+    const multiplier = this.state.quality > 0 ? this.state.quality : 1;
+    pxW = Math.round(pxW * multiplier);
+    pxH = Math.round(pxH * multiplier);
+    const MAX = 4096;
+    if (pxW > MAX || pxH > MAX) {
+      const ratio = Math.min(MAX / pxW, MAX / pxH);
+      pxW = Math.round(pxW * ratio);
+      pxH = Math.round(pxH * ratio);
+    }
+    return { width: pxW, height: pxH };
+  }
+
+  /** 渲染masterCanvas（仅此一处调用renderImage）*/
+  renderMaster() {
+    if (!this.state.image) return;
+    const ds = this.getDownloadSize();
+    this.masterCanvas.width = ds.width;
+    this.masterCanvas.height = ds.height;
+    const ctx = this.masterCanvas.getContext("2d");
+    renderImage(ctx, this.state.image, ds.width, ds.height, {
+      zoom: this.state.zoom, offsetX: this.state.offsetX, offsetY: this.state.offsetY,
+      rotation: this.state.rotation, fillColor: this.state.fillColor,
+    });
+    this.masterDirty = false;
+  }
+
   renderSizeButtons() {
     this.els.sizeScroll.innerHTML = SIZES.map((s, i) =>
       `<button class="size-btn${i===DEFAULTS.sizeIndex?' active':''}" data-index="${i}"><span class="size-label">${s.name}</span><span class="size-dim">${s.label}</span></button>`
@@ -545,9 +585,9 @@ export class App {
   }
 
   renderPreview() {
-    if (!this.state.image) return;
+    if (!this.state.image || !this.masterCanvas.width) return;
     const canvas = this.els.previewCanvas;
-    const ctx = canvas.getContext('2d');
+    const ctx = canvas.getContext("2d");
 
     if (this.state.frameEnabled && this.state.frameImage && this.state.frameBounds) {
       this.renderFramed(ctx, canvas);
@@ -555,7 +595,7 @@ export class App {
       this.renderPlain(ctx, canvas);
     }
 
-    this.els.canvasWrapper.classList.remove('updating');
+    this.els.canvasWrapper.classList.remove("updating");
   }
 
   renderPlain(ctx, canvas) {
@@ -563,21 +603,17 @@ export class App {
     const ps = getPreviewSize(eff.cmW, eff.cmH, 200);
     canvas.width = ps.width;
     canvas.height = ps.height;
-    this.els.canvasWrapper.style.height = ps.height + 'px';
-    renderImage(ctx, this.state.image, ps.width, ps.height, {
-      zoom: this.state.zoom, offsetX: this.state.offsetX, offsetY: this.state.offsetY,
-      rotation: this.state.rotation, fillColor: this.state.fillColor,
-    });
+    this.els.canvasWrapper.style.height = ps.height + "px";
+    ctx.drawImage(this.masterCanvas, 0, 0, ps.width, ps.height);
   }
 
   renderFramed(ctx, canvas) {
-    if (!this.state.image || !this.state.frameImage || !this.state.frameBounds) return;
+    if (!this.state.image || !this.state.frameImage || !this.state.frameBounds || !this.masterCanvas.width) return;
 
     const fw = this.state.frameImage.naturalWidth;
     const fh = this.state.frameImage.naturalHeight;
     const frameAspect = fw / fh;
 
-    // 预览尺寸以相框为准
     let pvw, pvh;
     if (frameAspect > 1) {
       pvh = 200;
@@ -590,81 +626,28 @@ export class App {
 
     canvas.width = pvw;
     canvas.height = pvh;
-    this.els.canvasWrapper.style.height = pvh + 'px';
+    this.els.canvasWrapper.style.height = pvh + "px";
 
-    // ========== 不再调用 renderImage() — 直接画拼图到临时 canvas ==========
-    // 用和 renderPlain() 完全相同的尺寸渲染拼图
-    const eff = this.getEffectiveSize();
-    const ps = getPreviewSize(eff.cmW, eff.cmH, 200);
-    const puzzleCanvas = document.createElement('canvas');
-    puzzleCanvas.width = ps.width;
-    puzzleCanvas.height = ps.height;
-    const puzzleCtx = puzzleCanvas.getContext('2d');
-    renderImage(puzzleCtx, this.state.image, ps.width, ps.height, {
-      zoom: this.state.zoom, offsetX: this.state.offsetX, offsetY: this.state.offsetY,
-      rotation: this.state.rotation, fillColor: this.state.fillColor,
-    });
-
-    // 计算内框在画布上的坐标
+    // 从masterCanvas直接缩放绘制到内框（唯一一次缩放）
     const { iL, iT, iw, ih } = calcInnerRect(pvw, pvh, this.state.frameImage, this.state.frameBounds);
     if (iw < 2 || ih < 2) return;
 
-    // 九参数 drawImage：整个 puzzleCanvas 拉伸映射到内框区域
-    ctx.drawImage(puzzleCanvas, 0, 0, puzzleCanvas.width, puzzleCanvas.height, iL, iT, iw, ih);
-
-    // 绘制透明PNG相框（最上层）
+    ctx.drawImage(this.masterCanvas, 0, 0, this.masterCanvas.width, this.masterCanvas.height, iL, iT, iw, ih);
     ctx.drawImage(this.state.frameImage, 0, 0, pvw, pvh);
   }
 
-  async handleDownload() {
-    if (!this.state.image) return;
+    async handleDownload() {
+    if (!this.state.image || !this.masterCanvas.width) return;
     try {
       this.els.downloadBtn.disabled = true;
-      this.els.downloadBtn.textContent = '处理中...';
-      const size = this.state.selectedSize;
-      const mode = this.state.quality;
-
-      const eff = this.getEffectiveSize();
-      const targetAspect = eff.cmW / eff.cmH;
-
-      // 基于图片原始分辨率计算输出尺寸
-      const imgW = this.state.image.naturalWidth;
-      const imgH = this.state.image.naturalHeight;
-      let pxW, pxH;
-      if (imgW / imgH > targetAspect) {
-        pxW = Math.round(imgW);
-        pxH = Math.round(imgW / targetAspect);
-      } else {
-        pxH = Math.round(imgH);
-        pxW = Math.round(imgH * targetAspect);
-      }
-
-      // 高清模式
-      const multiplier = mode > 0 ? mode : 1;
-      pxW = Math.round(pxW * multiplier);
-      pxH = Math.round(pxH * multiplier);
-
-      // 安全上限
-      const MAX = 4096;
-      if (pxW > MAX || pxH > MAX) {
-        const ratio = Math.min(MAX / pxW, MAX / pxH);
-        pxW = Math.round(pxW * ratio);
-        pxH = Math.round(pxH * ratio);
-      }
-
-      const offscreen = document.createElement('canvas');
-      const ctx = offscreen.getContext('2d');
-      renderImage(ctx, this.state.image, pxW, pxH, {
-        zoom: this.state.zoom, offsetX: this.state.offsetX, offsetY: this.state.offsetY,
-        rotation: this.state.rotation, fillColor: this.state.fillColor,
-      });
-      const filename = getOutputFilename(size.name, mode);
+      this.els.downloadBtn.textContent = "处理中...";
+      const filename = getOutputFilename(this.state.selectedSize.name, this.state.quality);
       await new Promise(r => setTimeout(r, 50));
-      downloadImage(offscreen, filename);
-      this.showToast('图片已生成，开始下载');
+      downloadImage(this.masterCanvas, filename);
+      this.showToast("图片已生成，开始下载");
     } catch (err) {
-      this.showToast('下载失败，请重试');
-      console.error('下载失败:', err);
+      this.showToast("下载失败，请重试");
+      console.error("下载失败:", err);
     } finally {
       this.els.downloadBtn.disabled = false;
       this.els.downloadBtn.innerHTML = '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg> 下载图片';
