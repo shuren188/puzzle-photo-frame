@@ -2,7 +2,7 @@ import { SIZES, QUALITIES, PRESET_COLORS, DEFAULTS, DRAG_SENSITIVITY, DEFAULT_FR
 import { renderImage, loadImage, getPreviewSize } from '../utils/imageProcessor.js';
 import { downloadImage, getOutputFilename } from '../utils/download.js';
 import { ColorPicker } from './ColorPicker.js';
-import { loadFrameImage, getFrameUrl, getFrameBounds, createWoodFrame, createPuzzleLines, renderFramed } from '../utils/frameProcessor.js';
+import { loadFrameImage, getFrameUrl, getFrameBounds, renderFramed } from '../utils/frameProcessor.js';
 
 const PINCH_SENSITIVITY = 0.45;
 
@@ -26,8 +26,6 @@ export class App {
       frameEnabled: DEFAULT_FRAME_ENABLED,
       frameImage: null,
       frameBounds: null,
-      woodFrame: null,
-      puzzleLines: null,
       frameLoading: false,
       frameLoadedUrl: null,
     };
@@ -219,7 +217,7 @@ export class App {
   async ensureFrameLoaded() {
     const eff = this.getEffectiveSize();
     const url = getFrameUrl(this.state.selectedSize.name, eff.isLandscape);
-    if (!url) { this.state.frameImage = null; this.state.frameBounds = null; this.state.woodFrame = null; this.state.puzzleLines = null; return; }
+    if (!url) { this.state.frameImage = null; this.state.frameBounds = null; return; }
 
     if (this.state.frameLoadedUrl === url && this.state.frameImage) return;
 
@@ -227,18 +225,16 @@ export class App {
     try {
       const frameImg = await loadFrameImage(url);
       this.state.frameImage = frameImg;
-      const bounds = getFrameBounds(frameImg, this.state.selectedSize.name, eff.isLandscape);
+      const bounds = getFrameBounds(this.state.selectedSize.name, eff.isLandscape);
       this.state.frameBounds = bounds;
       // 预处理相框叠加层（边框保留 + 内框切割线保留，白板透明）
-      this.state.woodFrame = createWoodFrame(frameImg, bounds);
-	      this.state.puzzleLines = createPuzzleLines(frameImg, bounds);
       this.state.frameLoadedUrl = url;
       this.scheduleRender();
     } catch (err) {
       console.error('相框加载失败:', err);
       this.state.frameImage = null;
       this.state.frameBounds = null;
-      this.state.woodFrame = null;
+  
       this.state.frameLoadedUrl = null;
     }
     this.state.frameLoading = false;
@@ -382,10 +378,10 @@ export class App {
     let pvw = 480, pvh = Math.round(pvw / ta);
     if (pvh > 680) { pvh = 680; pvw = Math.round(pvh * ta); }
 
-    if (this.state.frameEnabled && this.state.woodFrame && this.state.puzzleLines) {
+    if (this.state.frameEnabled && this.state.frameImage && this.state.frameBounds) {
       // 全屏带相框
-      const fw = this.state.woodFrame.width;
-      const fh = this.state.woodFrame.height;
+      const fw = this.state.frameImage.naturalWidth;
+      const fh = this.state.frameImage.naturalHeight;
       const frameAspect = fw / fh;
       let dispW, dispH;
       if (frameAspect > 1) {
@@ -405,7 +401,7 @@ export class App {
         zoom: this.state.zoom, offsetX: this.state.offsetX, offsetY: this.state.offsetY,
         rotation: this.state.rotation, fillColor: this.state.fillColor,
       });
-      renderFramed(ctx, dispW, dispH, fsTmp, this.state.fillColor, this.state.woodFrame, this.state.puzzleLines, this.state.frameBounds);
+      renderFramed(ctx, dispW, dispH, fsTmp, this.state.frameImage, this.state.frameBounds);
     } else {
       // 无相框
       renderImage(ctx, this.state.image, pvw, pvh, {
@@ -477,7 +473,6 @@ export class App {
       this.state.fillColor = DEFAULTS.fillColor;
       this.state.frameImage = null;
       this.state.frameBounds = null;
-      this.state.woodFrame = null;
       this.state.frameLoadedUrl = null;
       this.els.zoomSlider.value = DEFAULTS.zoom;
       this.els.zoomValue.textContent = DEFAULTS.zoom + '%';
@@ -511,7 +506,6 @@ export class App {
     this.state.originalFile = null;
     this.state.frameImage = null;
     this.state.frameBounds = null;
-    this.state.woodFrame = null;
     this.els.uploadPlaceholder.style.display = 'flex';
     this.els.previewContainer.style.display = 'none';
     this.els.controlsSection.style.display = 'none';
@@ -553,7 +547,7 @@ export class App {
     const canvas = this.els.previewCanvas;
     const ctx = canvas.getContext('2d');
 
-    if (this.state.frameEnabled && this.state.woodFrame) {
+    if (this.state.frameEnabled && this.state.frameImage && this.state.frameBounds) {
       this.renderFramed(ctx, canvas);
     } else {
       this.renderPlain(ctx, canvas);
@@ -575,10 +569,10 @@ export class App {
   }
 
   renderFramed(ctx, canvas) {
-    if (!this.state.image || !this.state.woodFrame || !this.state.puzzleLines) return;
+    if (!this.state.image || !this.state.frameImage || !this.state.frameBounds) return;
 
-    const fw = this.state.woodFrame.width;
-    const fh = this.state.woodFrame.height;
+    const fw = this.state.frameImage.naturalWidth;
+    const fh = this.state.frameImage.naturalHeight;
     const frameAspect = fw / fh;
 
     // 预览尺寸以相框为准
@@ -609,7 +603,7 @@ export class App {
     });
 
     // 第二步：用 renderFramed 包装 cropCanvas
-    renderFramed(ctx, pvw, pvh, cropCanvas, this.state.fillColor, this.state.woodFrame, this.state.puzzleLines, this.state.frameBounds);
+    renderFramed(ctx, pvw, pvh, cropCanvas, this.state.frameImage, this.state.frameBounds);
   }
 
   async handleDownload() {
@@ -672,7 +666,6 @@ export class App {
   clearFrameCache() {
     this.state.frameImage = null;
     this.state.frameBounds = null;
-    this.state.woodFrame = null;
     this.state.frameLoadedUrl = null;
   }
 
