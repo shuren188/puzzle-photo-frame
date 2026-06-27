@@ -389,18 +389,39 @@ export class App {
         dispH = Math.min(pvh, 680);
         dispW = Math.round(dispH * frameAspect);
       }
-      // 写实渲染：renderImage 到临时 canvas → 缩放到内框 → 覆盖相框
-      const puzzleAspect = eff.cmW / eff.cmH;
-      const puzW = Math.round(dispW);
-      const puzH = Math.round(puzW / puzzleAspect);
+      // 填充背景色
+      ctx.fillStyle = this.state.fillColor || '#FFFFFF';
+      ctx.fillRect(0, 0, dispW, dispH);
+
+      // renderImage 到临时 canvas（与 renderPlain 同尺寸参数）
+      const fsEff = this.getEffectiveSize();
+      const fsPs = getPreviewSize(fsEff.cmW, fsEff.cmH, 200);
       const tempCanvas = document.createElement('canvas');
+      tempCanvas.width = fsPs.width;
+      tempCanvas.height = fsPs.height;
       const tempCtx = tempCanvas.getContext('2d');
-      renderImage(tempCtx, this.state.image, puzW, puzH, {
+      renderImage(tempCtx, this.state.image, fsPs.width, fsPs.height, {
         zoom: this.state.zoom, offsetX: this.state.offsetX, offsetY: this.state.offsetY,
         rotation: this.state.rotation, fillColor: this.state.fillColor,
       });
+
+      // contain-fit 等比例缩小到内框
       const { iL: fsiL, iT: fsiT, iw: fsiw, ih: fsih } = calcInnerRect(dispW, dispH, this.state.frameImage, this.state.frameBounds);
-      ctx.drawImage(tempCanvas, 0, 0, tempCanvas.width, tempCanvas.height, fsiL, fsiT, fsiw, fsih);
+      const fcA = tempCanvas.width / tempCanvas.height;
+      const fiA = fsiw / fsih;
+      let fdX, fdY, fdW, fdH;
+      if (fcA > fiA) {
+        fdW = fsiw;
+        fdH = Math.round(fsiw / fcA);
+        fdX = fsiL;
+        fdY = fsiT + Math.round((fsih - fdH) / 2);
+      } else {
+        fdH = fsih;
+        fdW = Math.round(fsih * fcA);
+        fdX = fsiL + Math.round((fsiw - fdW) / 2);
+        fdY = fsiT;
+      }
+      ctx.drawImage(tempCanvas, 0, 0, tempCanvas.width, tempCanvas.height, fdX, fdY, fdW, fdH);
       ctx.drawImage(this.state.frameImage, 0, 0, dispW, dispH);
     } else {
       renderImage(ctx, this.state.image, pvw, pvh, {
@@ -580,22 +601,42 @@ export class App {
     canvas.height = pvh;
     this.els.canvasWrapper.style.height = pvh + 'px';
 
-    // Step 1: 渲染拼图到临时 canvas
-    const puzzleAspect = eff.cmW / eff.cmH;
-    const puzW = Math.round(pvw);
-    const puzH = Math.round(puzW / puzzleAspect);
+    // Step 1: 填充背景色到整个画布（等会儿内框未覆盖区域以此色显示）
+    ctx.fillStyle = this.state.fillColor || '#FFFFFF';
+    ctx.fillRect(0, 0, pvw, pvh);
+
+    // Step 2: 渲染拼图到临时 canvas（与 renderPlain 同尺寸、同参数）
+    const ps = getPreviewSize(eff.cmW, eff.cmH, 200);
     const cropCanvas = document.createElement('canvas');
+    cropCanvas.width = ps.width;
+    cropCanvas.height = ps.height;
     const cropCtx = cropCanvas.getContext('2d');
-    renderImage(cropCtx, this.state.image, puzW, puzH, {
+    renderImage(cropCtx, this.state.image, ps.width, ps.height, {
       zoom: this.state.zoom, offsetX: this.state.offsetX, offsetY: this.state.offsetY,
       rotation: this.state.rotation, fillColor: this.state.fillColor,
     });
 
-    // Step 2: 缩放到内框
+    // Step 3: contain-fit 放入内框（等比例缩小，完整显示，不裁剪）
     const { iL, iT, iw, ih } = calcInnerRect(pvw, pvh, this.state.frameImage, this.state.frameBounds);
-    ctx.drawImage(cropCanvas, 0, 0, cropCanvas.width, cropCanvas.height, iL, iT, iw, ih);
+    const cA = cropCanvas.width / cropCanvas.height;
+    const iA = iw / ih;
+    let dX, dY, dW, dH;
+    if (cA > iA) {
+      // 拼图比内框宽 → 按宽度适配，上下居中留白
+      dW = iw;
+      dH = Math.round(iw / cA);
+      dX = iL;
+      dY = iT + Math.round((ih - dH) / 2);
+    } else {
+      // 拼图比内框高 → 按高度适配，左右居中留白
+      dH = ih;
+      dW = Math.round(ih * cA);
+      dX = iL + Math.round((iw - dW) / 2);
+      dY = iT;
+    }
+    ctx.drawImage(cropCanvas, 0, 0, cropCanvas.width, cropCanvas.height, dX, dY, dW, dH);
 
-    // Step 3: 覆盖透明PNG相框
+    // Step 4: 覆盖透明PNG相框（内框透明，让 cropCanvas 透出）
     ctx.drawImage(this.state.frameImage, 0, 0, pvw, pvh);
   }
 
