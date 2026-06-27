@@ -53,21 +53,18 @@ export function getFrameBounds(sizeName, isLandscape) {
 
 /**
  * 计算内框在画布上的像素坐标和尺寸
- * @param {number} canvasW - 画布宽度
- * @param {number} canvasH - 画布高度
- * @param {HTMLImageElement} frameImg - 相框图片
- * @param {{left,top,right,bottom}} bounds - 内框坐标
- * @returns {{ iL: number, iT: number, iw: number, ih: number }}
+ * 注意：不进行任何取整操作，保留浮点精度
+ *       浏览器 drawImage 会自行处理子像素抗锯齿
  */
 /** @package */
 export function calcInnerRect(canvasW, canvasH, frameImg, bounds) {
   const sx = canvasW / frameImg.naturalWidth;
   const sy = canvasH / frameImg.naturalHeight;
   return {
-    iL: Math.round(bounds.left * sx),
-    iT: Math.round(bounds.top * sy),
-    iw: Math.round((bounds.right - bounds.left) * sx),
-    ih: Math.round((bounds.bottom - bounds.top) * sy),
+    iL: bounds.left * sx,
+    iT: bounds.top * sy,
+    iw: (bounds.right - bounds.left) * sx,
+    ih: (bounds.bottom - bounds.top) * sy,
   };
 }
 
