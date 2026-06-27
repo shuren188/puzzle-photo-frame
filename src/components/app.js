@@ -227,7 +227,6 @@ export class App {
       this.state.frameImage = frameImg;
       const bounds = getFrameBounds(this.state.selectedSize.name, eff.isLandscape);
       this.state.frameBounds = bounds;
-      // 预处理相框叠加层（边框保留 + 内框切割线保留，白板透明）
       this.state.frameLoadedUrl = url;
       this.scheduleRender();
     } catch (err) {

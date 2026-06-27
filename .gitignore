@@ -8,6 +8,7 @@ analyze_frames.py
 /带框效果图-横版/
 /带框效果图-竖版/
 *.png
+!/public/frames/**/*.png
 generate_*.py
 analyze_*.py
 deploy-api.js
