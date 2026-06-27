@@ -1,13 +1,18 @@
 /**
  * 相框处理模块
  *
- * 方案：直接合成法
- *   不经过 renderImage 中间步骤，把用户原图直接绘制到相框内框
+ * 方案：蒙版预处理 + 两层 drawImage
  *
- *   1. 相框全图铺底（边框+白板+切割线）
- *   2. 用户原图 cover-fitted 直接绘制到内框区域（替换白板）
- *   3. 切割线纹理 overlay 叠加保持可见
- *   4. 边框（内框挖空）盖在最顶层确保边框不受影响
+ * 预处理阶段（相框加载时）：
+ *   - 将相框图片绘制到离屏 canvas
+ *   - 内框区域像素 alpha 设为 0（透明）
+ *   - 保存为 frameMaskCanvas
+ *
+ * 合成阶段（预览渲染时）：
+ *   - Step 1: drawImage(puzzleCanvas) → 绘制完整拼图
+ *   - Step 2: drawImage(frameMaskCanvas) → 覆盖相框（内框透明让拼图透出）
+ *
+ * 优势：不依赖任何 compositing 模式，纯两个 drawImage
  */
 
 const FILE_MAP = {
@@ -55,89 +60,110 @@ export function getFrameBounds(frameImg, sizeName, isLandscape) {
 }
 
 /**
- * 将用户图片直接合成到相框（不经过中间拼图步骤）
+ * 预处理：创建内框透明的相框蒙版
+ *
+ * 将相框图片中内框区域的 alpha 设为 0，
+ * 这样直接绘制在拼图上方时，内框透明让拼图透出，
+ * 边框覆盖在拼图之上。
+ *
+ * @param {HTMLImageElement} frameImg - 相框图片
+ * @param {{left,top,right,bottom}} bounds - 内框边界
+ * @returns {HTMLCanvasElement} 预处理后的蒙版 canvas
+ */
+export function createFrameMask(frameImg, bounds) {
+  const fw = frameImg.naturalWidth;
+  const fh = frameImg.naturalHeight;
+
+  const canvas = document.createElement('canvas');
+  canvas.width = fw;
+  canvas.height = fh;
+  const ctx = canvas.getContext('2d');
+
+  // 绘制相框
+  ctx.drawImage(frameImg, 0, 0);
+
+  // 获取像素数据
+  const imageData = ctx.getImageData(0, 0, fw, fh);
+  const data = imageData.data;
+
+  // 将内框区域的 alpha 设为 0（透明）
+  const iL = bounds.left;
+  const iT = bounds.top;
+  const iR = bounds.right;
+  const iB = bounds.bottom;
+
+  for (let y = iT; y < iB; y++) {
+    for (let x = iL; x < iR; x++) {
+      const idx = (y * fw + x) * 4 + 3; // alpha channel
+      data[idx] = 0;
+    }
+  }
+
+  // 写回
+  ctx.putImageData(imageData, 0, 0);
+
+  return canvas;
+}
+
+/**
+ * 将拼图与相框合成
+ *
+ * 两步法（不依赖任何复合模式）：
+ *   1. 绘制拼图（cover-fit 到画布，按内框比例填充）
+ *   2. 绘制相框蒙版（内框透明，边框覆盖在拼图上）
  *
  * @param {CanvasRenderingContext2D} ctx - 输出上下文
- * @param {HTMLImageElement} userImg - 用户原始图片
- * @param {HTMLImageElement} frameImg - 相框图片
- * @param {{left,top,right,bottom}} bounds - 内框坐标
+ * @param {HTMLCanvasElement} puzzleCanvas - renderImage 输出的拼图画布
+ * @param {HTMLCanvasElement} frameMaskCanvas - createFrameMask 输出的蒙版 canvas
+ * @param {{left,top,right,bottom}} bounds - 内框边界
  * @param {number} canvasW - 输出宽度
  * @param {number} canvasH - 输出高度
  */
-export function compositeFramedDirect(ctx, userImg, frameImg, bounds, canvasW, canvasH) {
+export function compositeFramedImage(ctx, puzzleCanvas, frameMaskCanvas, canvasW, canvasH) {
   ctx.canvas.width = canvasW;
   ctx.canvas.height = canvasH;
 
-  const sx = canvasW / frameImg.naturalWidth;
-  const sy = canvasH / frameImg.naturalHeight;
-  const iL = Math.round(bounds.left * sx);
-  const iT = Math.round(bounds.top * sy);
-  const iw = Math.round((bounds.right - bounds.left) * sx);
-  const ih = Math.round((bounds.bottom - bounds.top) * sy);
-  if (iw <= 2 || ih <= 2) return;
-  const iR = iL + iw;
-  const iB = iT + ih;
+  // ---- Step 1: 绘制拼图（铺满整个画布，只显示内框部分） ----
+  // 拼图尺寸按内框比例 cover-fit 到画布大小
+  // 这样拼图会填满内框区域，画布其他部分会被后续的相框覆盖
+  const puzW = puzzleCanvas.width;
+  const puzH = puzzleCanvas.height;
+  const puzA = puzW / puzH;
+  const canvasA = canvasW / canvasH;
 
-  // ============ 第一步：相框边框（内框挖空）============
-  const borderCanvas = document.createElement('canvas');
-  borderCanvas.width = canvasW;
-  borderCanvas.height = canvasH;
-  const bCtx = borderCanvas.getContext('2d');
-  bCtx.drawImage(frameImg, 0, 0, canvasW, canvasH);
-  bCtx.globalCompositeOperation = 'destination-out';
-  bCtx.fillRect(iL, iT, iw, ih);
-  bCtx.globalCompositeOperation = 'source-over';
-
-  // ============ 第二步：计算内框在相框原图的纹理区域 ============
-  const texCanvas = document.createElement('canvas');
-  texCanvas.width = iw;
-  texCanvas.height = ih;
-  const tCtx = texCanvas.getContext('2d');
-  tCtx.drawImage(frameImg,
-    bounds.left, bounds.top, bounds.right - bounds.left, bounds.bottom - bounds.top,
-    0, 0, iw, ih
-  );
-
-  // ============ 第三步：合成到主画布 ============
-  // a) 绘制边框
-  ctx.drawImage(borderCanvas, 0, 0);
-
-  // b) 在内框区域绘制用户图片（cover-fitted）
-  const iAspect = iw / ih;
-  const uW = userImg.naturalWidth;
-  const uH = userImg.naturalHeight;
-  const uAspect = uW / uH;
-
-  let srcX, srcY, srcW, srcH;
-  if (uAspect > iAspect) {
-    srcH = uH;
-    srcW = Math.round(uH * iAspect);
-    srcX = Math.round((uW - srcW) / 2);
-    srcY = 0;
+  let dW, dH, dX, dY;
+  if (puzA > canvasA) {
+    dW = canvasW;
+    dH = Math.round(canvasW / puzA);
+    dX = 0;
+    dY = Math.round((canvasH - dH) / 2);
   } else {
-    srcW = uW;
-    srcH = Math.round(uW / iAspect);
-    srcX = 0;
-    srcY = Math.round((uH - srcH) / 2);
+    dH = canvasH;
+    dW = Math.round(canvasH * puzA);
+    dX = Math.round((canvasW - dW) / 2);
+    dY = 0;
   }
 
-  // clip 到内框区域再绘制用户图片
-  ctx.save();
-  ctx.beginPath();
-  ctx.rect(iL, iT, iw, ih);
-  ctx.clip();
-  ctx.drawImage(userImg, srcX, srcY, srcW, srcH, iL, iT, iw, ih);
-  ctx.restore();
+  ctx.drawImage(puzzleCanvas, dX, dY, dW, dH);
 
-  // c) 在内框区域叠加切割线纹理（multiply）
-  ctx.save();
-  ctx.beginPath();
-  ctx.rect(iL, iT, iw, ih);
-  ctx.clip();
-  ctx.globalCompositeOperation = 'multiply';
-  ctx.drawImage(texCanvas, iL, iT);
-  ctx.globalCompositeOperation = 'source-over';
-  ctx.restore();
+  // ---- Step 2: 绘制相框蒙版（内框透明） ----
+  // 缩放到 canvas 尺寸，直接盖在拼图上
+  ctx.drawImage(frameMaskCanvas, 0, 0, canvasW, canvasH);
+}
+
+/**
+ * 计算用于蒙版的画布上内框对应的裁剪区域（原始像素坐标）
+ * 用于 renderFramedPreview 中确定 puzzleCanvas 的尺寸
+ */
+export function getMaskInnerSize(frameMaskCanvas, bounds, canvasW, canvasH) {
+  const fw = frameMaskCanvas.width;
+  const fh = frameMaskCanvas.height;
+  return {
+    left: Math.round(bounds.left * canvasW / fw),
+    top: Math.round(bounds.top * canvasH / fh),
+    right: Math.round(bounds.right * canvasW / fw),
+    bottom: Math.round(bounds.bottom * canvasH / fh),
+  };
 }
 
 export function clearFrameBoundsCache() {}
