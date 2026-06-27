@@ -1,19 +1,19 @@
 /**
- * 相框处理模块 v3.0.0
+ * 相框处理模块 v3.1.0
  *
- * 方案：照片直绘内框 + 相框叠加层（含切割线）
+ * 遵循 GPT 建议的核心原则：
+ *   renderFramed() 不参与图片裁剪，只接收已完成的 cropCanvas
  *
- * 预处理（相框加载时）：
- *   生成 frameOverlay：
- *   - 边框区域：保留原样（不透明）
- *   - 内框区域：白板(亮度≥195)→透明，切割线(亮度≤80)→保留(70%透明度)
+ * 预处理（相框加载时一次性生成两个叠加层）：
+ *   1. woodFrame — 木框（内框完全透明，边框保留）
+ *   2. puzzleLines — 拼图切割线纹理（内框暗线保留，白板透明）
  *
- * 渲染（每次重绘）：
- *   1. 清空画布 → 填充背景色
- *   2. 计算照片在内框的 cover-fit 坐标
- *   3. drawImage 照片到内框区域
- *   4. drawImage frameOverlay 盖在最上层
- *      → 边框覆盖照片边缘，切割线半透明叠在照片上，白板透明让照片透出
+ * 渲染（每次重绘，严格5步）：
+ *   ① 填充背景色
+ *   ② renderImage() → cropCanvas（拼图已裁剪完成）
+ *   ③ cropCanvas contain-fit 到内框区域（完整显示，不裁剪）
+ *   ④ source-over 叠加 puzzleLines（切割线呈现在照片上）
+ *   ⑤ source-over 叠加 woodFrame（木框覆盖最上层）
  */
 
 const FILE_MAP = {
@@ -60,12 +60,12 @@ export function getFrameBounds(frameImg, sizeName, isLandscape) {
 }
 
 /**
- * 预处理：生成相框叠加层
+ * 预处理1：生成木框叠加层（内框完全透明）
  * @param {HTMLImageElement} frameImg
  * @param {{left,top,right,bottom}} bounds
- * @returns {HTMLCanvasElement} RGBA canvas（边框保留 + 内框切割线半透明 + 内框白板透明）
+ * @returns {HTMLCanvasElement}
  */
-export function createFrameOverlay(frameImg, bounds) {
+export function createWoodFrame(frameImg, bounds) {
   const w = frameImg.naturalWidth;
   const h = frameImg.naturalHeight;
   const canvas = document.createElement('canvas');
@@ -77,22 +77,10 @@ export function createFrameOverlay(frameImg, bounds) {
   const imageData = ctx.getImageData(0, 0, w, h);
   const data = imageData.data;
 
+  // 内框区域全部设为透明
   for (let y = bounds.top; y < bounds.bottom; y++) {
     for (let x = bounds.left; x < bounds.right; x++) {
-      const idx = (y * w + x) * 4;
-      const brightness = (data[idx] + data[idx + 1] + data[idx + 2]) / 3;
-
-      if (brightness >= 195) {
-        // 白板/亮色 → 完全透明（让用户照片透出）
-        data[idx + 3] = 0;
-      } else if (brightness <= 80) {
-        // 深色切割线 → 保留原色，70%透明度
-        data[idx + 3] = 178;
-      } else {
-        // 过渡区 → 按亮度线性渐变透明度
-        const alpha = Math.round(178 * (1 - (brightness - 80) / 115));
-        data[idx + 3] = Math.max(0, Math.min(255, alpha));
-      }
+      data[(y * w + x) * 4 + 3] = 0;
     }
   }
 
@@ -101,106 +89,116 @@ export function createFrameOverlay(frameImg, bounds) {
 }
 
 /**
- * 相框模式渲染函数
+ * 预处理2：生成拼图切割线纹理（内框暗线保留，白板透明）
+ * @param {HTMLImageElement} frameImg
+ * @param {{left,top,right,bottom}} bounds
+ * @returns {HTMLCanvasElement} 尺寸 = 内框尺寸
+ */
+export function createPuzzleLines(frameImg, bounds) {
+  const iw = bounds.right - bounds.left;
+  const ih = bounds.bottom - bounds.top;
+  const canvas = document.createElement('canvas');
+  canvas.width = iw;
+  canvas.height = ih;
+  const ctx = canvas.getContext('2d');
+
+  // 截取相框内框区域
+  ctx.drawImage(frameImg, bounds.left, bounds.top, iw, ih, 0, 0, iw, ih);
+
+  // 处理像素：暗色切割线保留，亮色白板变透明
+  const imageData = ctx.getImageData(0, 0, iw, ih);
+  const data = imageData.data;
+  const len = data.length;
+
+  for (let i = 0; i < len; i += 4) {
+    const brightness = (data[i] + data[i + 1] + data[i + 2]) / 3;
+
+    if (brightness >= 180) {
+      // 白板/亮色 → 完全透明（不影响下方照片）
+      data[i + 3] = 0;
+    } else if (brightness <= 60) {
+      // 深色切割线 → 保留原色，完全不透明
+      data[i + 3] = 255;
+    } else {
+      // 过渡区 → 按亮度渐变透明度，颜色不变
+      const alpha = Math.round(255 * (1 - (brightness - 60) / 120));
+      data[i + 3] = Math.max(0, Math.min(255, alpha));
+    }
+  }
+
+  ctx.putImageData(imageData, 0, 0);
+  return canvas;
+}
+
+/**
+ * 渲染带相框的效果图
  *
- * 专用于当相框开启时的渲染。无相框模式使用 app.js 中的 renderImage。
+ * 严格遵循5步流程，不参与任何图片裁剪计算。
+ * 只接收已完成的 cropCanvas 进行包装。
  *
- * @param {CanvasRenderingContext2D} ctx
+ * @param {CanvasRenderingContext2D} ctx - 输出画布上下文
  * @param {number} canvasW - 输出画布宽度
  * @param {number} canvasH - 输出画布高度
- * @param {HTMLImageElement} userImg - 用户原始图片
- * @param {object} imgState - { zoom, offsetX, offsetY, rotation, fillColor }
- * @param {HTMLCanvasElement} frameOverlay - createFrameOverlay 的输出
+ * @param {HTMLCanvasElement} cropCanvas - 已完成的拼图画布（renderImage 输出）
+ * @param {string} fillColor - 背景填充色
+ * @param {HTMLCanvasElement} woodFrame - 木框叠加层
+ * @param {HTMLCanvasElement} puzzleLines - 拼图切割线纹理
  * @param {{left,top,right,bottom}} bounds - 内框边界
  */
-export function renderFramed(ctx, canvasW, canvasH, userImg, imgState, frameOverlay, bounds) {
+export function renderFramed(ctx, canvasW, canvasH, cropCanvas, fillColor, woodFrame, puzzleLines, bounds) {
   ctx.canvas.width = canvasW;
   ctx.canvas.height = canvasH;
 
-  // Step 1: 清空画布
-  ctx.clearRect(0, 0, canvasW, canvasH);
-
-  // Step 2: 填充背景色
-  ctx.fillStyle = imgState.fillColor || '#FFFFFF';
+  // ========== ① 填充背景色 ==========
+  ctx.fillStyle = fillColor || '#FFFFFF';
   ctx.fillRect(0, 0, canvasW, canvasH);
 
-  // 计算内框在画布上的像素坐标
-  const fw = frameOverlay.width;
-  const fh = frameOverlay.height;
+  // ========== 计算内框在画布上的位置 ==========
+  const fw = woodFrame.width;
+  const fh = woodFrame.height;
   const sx = canvasW / fw;
   const sy = canvasH / fh;
   const iL = Math.round(bounds.left * sx);
   const iT = Math.round(bounds.top * sy);
-  const iR = Math.round(bounds.right * sx);
-  const iB = Math.round(bounds.bottom * sy);
-  const iw = iR - iL;
-  const ih = iB - iT;
+  const iw = Math.round((bounds.right - bounds.left) * sx);
+  const ih = Math.round((bounds.bottom - bounds.top) * sy);
 
-  if (iw > 2 && ih > 2) {
-    // Step 3: 计算用户照片在内框区域的 cover-fit 坐标
-    const imgW = userImg.naturalWidth;
-    const imgH = userImg.naturalHeight;
-    // 考虑旋转
-    const nr = imgState.rotation % 180 !== 0;
-    const effW = nr ? imgH : imgW;
-    const effH = nr ? imgW : imgH;
-    const imgAspect = effW / effH;
-    const innerAspect = iw / ih;
-
-    let srcX, srcY, srcW, srcH;
-    if (imgAspect > innerAspect) {
-      srcW = effH * innerAspect;  // 以高度为准，裁剪左右
-      srcH = effH;
-      srcX = (effW - srcW) / 2;
-      srcY = 0;
-    } else {
-      srcW = effW;
-      srcH = effW / innerAspect;  // 以宽度为准，裁剪上下
-      srcX = 0;
-      srcY = (effH - srcH) / 2;
-    }
-
-    // 应用 zoom
-    const zf = (imgState.zoom || 100) / 100;
-    const zSrcW = srcW / zf;
-    const zSrcH = srcH / zf;
-    let zSrcX = srcX + (srcW - zSrcW) / 2;
-    let zSrcY = srcY + (srcH - zSrcH) / 2;
-
-    // 应用 offset
-    const maxOffX = (zSrcW - srcW) / 2;
-    const maxOffY = (zSrcH - srcH) / 2;
-    zSrcX += maxOffX * ((imgState.offsetX || 0) / 100);
-    zSrcY += maxOffY * ((imgState.offsetY || 0) / 100);
-
-    // 如果旋转，旋转源图坐标
-    const finalSrcX = nr ? zSrcY : zSrcX;
-    const finalSrcY = nr ? zSrcX : zSrcY;
-    const finalSrcW = nr ? zSrcH : zSrcW;
-    const finalSrcH = nr ? zSrcW : zSrcH;
-
-    // 处理旋转
-    const rotation = (imgState.rotation || 0) % 360;
-    if (rotation !== 0) {
-      ctx.save();
-      ctx.translate(iL + iw / 2, iT + ih / 2);
-      ctx.rotate(rotation * Math.PI / 180);
-      ctx.translate(-(iL + iw / 2), -(iT + ih / 2));
-    }
-
-    // 绘制用户照片到内框区域
-    ctx.drawImage(userImg, finalSrcX, finalSrcY, finalSrcW, finalSrcH, iL, iT, iw, ih);
-
-    if (rotation !== 0) {
-      ctx.restore();
-    }
-
-    // Step 4: 相框叠加层盖在最上层（边框+切割线，白板透明）
-    ctx.drawImage(frameOverlay, 0, 0, canvasW, canvasH);
-  } else {
-    // 内框太小 → 只绘制相框
-    ctx.drawImage(frameOverlay, 0, 0, canvasW, canvasH);
+  if (iw < 2 || ih < 2) {
+    // 内框太小，只画木框
+    ctx.drawImage(woodFrame, 0, 0, canvasW, canvasH);
+    return;
   }
+
+  // ========== ③ cropCanvas contain-fit 到内框 ==========
+  // 注：cropCanvas 是已完成裁剪的拼图，必须完整显示
+  const cW = cropCanvas.width;
+  const cH = cropCanvas.height;
+  const cA = cW / cH;
+  const iA = iw / ih;
+
+  let dW, dH, dX, dY;
+  if (cA > iA) {
+    // 拼图比内框更宽 → 以宽度为准（完整显示宽度）
+    dW = iw;
+    dH = Math.round(iw / cA);
+    dX = 0;
+    dY = Math.round((ih - dH) / 2);
+  } else {
+    // 拼图比内框更高 → 以高度为准（完整显示高度）
+    dH = ih;
+    dW = Math.round(ih * cA);
+    dX = Math.round((iw - dW) / 2);
+    dY = 0;
+  }
+
+  ctx.drawImage(cropCanvas, iL + dX, iT + dY, dW, dH);
+
+  // ========== ④ source-over 叠加拼图切割线纹理 ==========
+  // puzzleLines 尺寸 = 内框原始尺寸，需要缩放到当前画布的内框大小
+  ctx.drawImage(puzzleLines, iL, iT, iw, ih);
+
+  // ========== ⑤ source-over 叠加木框（内框透明）==========
+  ctx.drawImage(woodFrame, 0, 0, canvasW, canvasH);
 }
 
 export function clearFrameBoundsCache() {}

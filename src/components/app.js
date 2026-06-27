@@ -2,7 +2,7 @@ import { SIZES, QUALITIES, PRESET_COLORS, DEFAULTS, DRAG_SENSITIVITY, DEFAULT_FR
 import { renderImage, loadImage, getPreviewSize } from '../utils/imageProcessor.js';
 import { downloadImage, getOutputFilename } from '../utils/download.js';
 import { ColorPicker } from './ColorPicker.js';
-import { loadFrameImage, getFrameUrl, getFrameBounds, createFrameOverlay, renderFramed } from '../utils/frameProcessor.js';
+import { loadFrameImage, getFrameUrl, getFrameBounds, createWoodFrame, createPuzzleLines, renderFramed } from '../utils/frameProcessor.js';
 
 const PINCH_SENSITIVITY = 0.45;
 
@@ -26,7 +26,8 @@ export class App {
       frameEnabled: DEFAULT_FRAME_ENABLED,
       frameImage: null,
       frameBounds: null,
-      frameOverlay: null,
+      woodFrame: null,
+      puzzleLines: null,
       frameLoading: false,
       frameLoadedUrl: null,
     };
@@ -218,7 +219,7 @@ export class App {
   async ensureFrameLoaded() {
     const eff = this.getEffectiveSize();
     const url = getFrameUrl(this.state.selectedSize.name, eff.isLandscape);
-    if (!url) { this.state.frameImage = null; this.state.frameBounds = null; this.state.frameOverlay = null; return; }
+    if (!url) { this.state.frameImage = null; this.state.frameBounds = null; this.state.woodFrame = null; this.state.puzzleLines = null; return; }
 
     if (this.state.frameLoadedUrl === url && this.state.frameImage) return;
 
@@ -229,14 +230,15 @@ export class App {
       const bounds = getFrameBounds(frameImg, this.state.selectedSize.name, eff.isLandscape);
       this.state.frameBounds = bounds;
       // 预处理相框叠加层（边框保留 + 内框切割线保留，白板透明）
-      this.state.frameOverlay = createFrameOverlay(frameImg, bounds);
+      this.state.woodFrame = createWoodFrame(frameImg, bounds);
+	      this.state.puzzleLines = createPuzzleLines(frameImg, bounds);
       this.state.frameLoadedUrl = url;
       this.scheduleRender();
     } catch (err) {
       console.error('相框加载失败:', err);
       this.state.frameImage = null;
       this.state.frameBounds = null;
-      this.state.frameOverlay = null;
+      this.state.woodFrame = null;
       this.state.frameLoadedUrl = null;
     }
     this.state.frameLoading = false;
@@ -380,10 +382,10 @@ export class App {
     let pvw = 480, pvh = Math.round(pvw / ta);
     if (pvh > 680) { pvh = 680; pvw = Math.round(pvh * ta); }
 
-    if (this.state.frameEnabled && this.state.frameOverlay) {
+    if (this.state.frameEnabled && this.state.woodFrame && this.state.puzzleLines) {
       // 全屏带相框
-      const fw = this.state.frameOverlay.width;
-      const fh = this.state.frameOverlay.height;
+      const fw = this.state.woodFrame.width;
+      const fh = this.state.woodFrame.height;
       const frameAspect = fw / fh;
       let dispW, dispH;
       if (frameAspect > 1) {
@@ -393,11 +395,17 @@ export class App {
         dispH = Math.min(pvh, 680);
         dispW = Math.round(dispH * frameAspect);
       }
-      renderFramed(ctx, dispW, dispH, this.state.image, {
-        zoom: this.state.zoom, offsetX: this.state.offsetX,
-        offsetY: this.state.offsetY, rotation: this.state.rotation,
-        fillColor: this.state.fillColor,
-      }, this.state.frameOverlay, this.state.frameBounds);
+      // 生成 cropCanvas
+      const fsTmp = document.createElement('canvas');
+      const fsTmpCtx = fsTmp.getContext('2d');
+      const fsAspect = eff.cmW / eff.cmH;
+      const fsW2 = Math.round(dispW * 1.2);
+      const fsH2 = Math.round(fsW2 / fsAspect);
+      renderImage(fsTmpCtx, this.state.image, fsW2, fsH2, {
+        zoom: this.state.zoom, offsetX: this.state.offsetX, offsetY: this.state.offsetY,
+        rotation: this.state.rotation, fillColor: this.state.fillColor,
+      });
+      renderFramed(ctx, dispW, dispH, fsTmp, this.state.fillColor, this.state.woodFrame, this.state.puzzleLines, this.state.frameBounds);
     } else {
       // 无相框
       renderImage(ctx, this.state.image, pvw, pvh, {
@@ -469,7 +477,7 @@ export class App {
       this.state.fillColor = DEFAULTS.fillColor;
       this.state.frameImage = null;
       this.state.frameBounds = null;
-      this.state.frameOverlay = null;
+      this.state.woodFrame = null;
       this.state.frameLoadedUrl = null;
       this.els.zoomSlider.value = DEFAULTS.zoom;
       this.els.zoomValue.textContent = DEFAULTS.zoom + '%';
@@ -503,7 +511,7 @@ export class App {
     this.state.originalFile = null;
     this.state.frameImage = null;
     this.state.frameBounds = null;
-    this.state.frameOverlay = null;
+    this.state.woodFrame = null;
     this.els.uploadPlaceholder.style.display = 'flex';
     this.els.previewContainer.style.display = 'none';
     this.els.controlsSection.style.display = 'none';
@@ -545,7 +553,7 @@ export class App {
     const canvas = this.els.previewCanvas;
     const ctx = canvas.getContext('2d');
 
-    if (this.state.frameEnabled && this.state.frameOverlay) {
+    if (this.state.frameEnabled && this.state.woodFrame) {
       this.renderFramed(ctx, canvas);
     } else {
       this.renderPlain(ctx, canvas);
@@ -567,10 +575,10 @@ export class App {
   }
 
   renderFramed(ctx, canvas) {
-    if (!this.state.image || !this.state.frameOverlay) return;
+    if (!this.state.image || !this.state.woodFrame || !this.state.puzzleLines) return;
 
-    const fw = this.state.frameOverlay.width;
-    const fh = this.state.frameOverlay.height;
+    const fw = this.state.woodFrame.width;
+    const fh = this.state.woodFrame.height;
     const frameAspect = fw / fh;
 
     // 预览尺寸以相框为准
@@ -588,12 +596,20 @@ export class App {
     canvas.height = pvh;
     this.els.canvasWrapper.style.height = pvh + 'px';
 
-    // 使用统一 render 函数
-    renderFramed(ctx, pvw, pvh, this.state.image, {
-      zoom: this.state.zoom, offsetX: this.state.offsetX,
-      offsetY: this.state.offsetY, rotation: this.state.rotation,
-      fillColor: this.state.fillColor,
-    }, this.state.frameOverlay, this.state.frameBounds);
+    // 第一步：生成 cropCanvas（renderImage 完成裁剪）
+    const eff = this.getEffectiveSize();
+    const puzzleAspect = eff.cmW / eff.cmH;
+    const tmpW = Math.round(pvw * 1.2);
+    const tmpH = Math.round(tmpW / puzzleAspect);
+    const cropCanvas = document.createElement('canvas');
+    const cropCtx = cropCanvas.getContext('2d');
+    renderImage(cropCtx, this.state.image, tmpW, tmpH, {
+      zoom: this.state.zoom, offsetX: this.state.offsetX, offsetY: this.state.offsetY,
+      rotation: this.state.rotation, fillColor: this.state.fillColor,
+    });
+
+    // 第二步：用 renderFramed 包装 cropCanvas
+    renderFramed(ctx, pvw, pvh, cropCanvas, this.state.fillColor, this.state.woodFrame, this.state.puzzleLines, this.state.frameBounds);
   }
 
   async handleDownload() {
@@ -656,7 +672,7 @@ export class App {
   clearFrameCache() {
     this.state.frameImage = null;
     this.state.frameBounds = null;
-    this.state.frameOverlay = null;
+    this.state.woodFrame = null;
     this.state.frameLoadedUrl = null;
   }
 
