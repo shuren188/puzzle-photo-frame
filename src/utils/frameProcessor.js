@@ -74,12 +74,13 @@ export function calcInnerRect(canvasW, canvasH, frameImg, bounds) {
 /**
  * 渲染带相框的效果图
  *
- * cropCanvas 必须精确等于内框尺寸（iw × ih），无需二次缩放
+ * 使用九参数 drawImage 将整个 cropCanvas（包括白边）
+ * 完整映射到相框内框区域。
  *
  * @param {CanvasRenderingContext2D} ctx - 输出画布上下文
  * @param {number} canvasW - 输出宽度
  * @param {number} canvasH - 输出高度
- * @param {HTMLCanvasElement} cropCanvas - renderImage 输出的已完成拼图（尺寸=iw×ih）
+ * @param {HTMLCanvasElement} cropCanvas - renderImage 输出的已完成拼图
  * @param {HTMLImageElement} frameImg - 透明PNG相框图片
  * @param {{left,top,right,bottom}} bounds - 内框坐标
  */
@@ -90,8 +91,13 @@ export function renderFramed(ctx, canvasW, canvasH, cropCanvas, frameImg, bounds
   const { iL, iT, iw, ih } = calcInnerRect(canvasW, canvasH, frameImg, bounds);
   if (iw < 2 || ih < 2) return;
 
-  // 绘制 cropCanvas 到内框位置（cropCanvas 尺寸已精确等于 iw×ih）
-  ctx.drawImage(cropCanvas, iL, iT);
+  // 九参数 drawImage：将整个 cropCanvas（0,0 到宽高）拉伸映射到内框区域
+  // 确保 renderImage 输出的全部内容（照片+白边+填充色）完整显示
+  ctx.drawImage(
+    cropCanvas,
+    0, 0, cropCanvas.width, cropCanvas.height,
+    iL, iT, iw, ih
+  );
 
   // 绘制透明PNG相框（内框透明，让 cropCanvas 透出）
   ctx.drawImage(frameImg, 0, 0, canvasW, canvasH);
