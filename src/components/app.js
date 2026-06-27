@@ -535,6 +535,7 @@ export class App {
         card.style.setProperty('--anim-delay', `${(i + 1) * 0.12}s`);
       });
       this.hideLoading();
+      this.masterDirty = true;
       this.scheduleRender();
     } catch (err) {
       this.hideLoading();
@@ -567,6 +568,7 @@ export class App {
     this.els.offsetXValue.textContent = DEFAULTS.offsetX + '%';
     this.els.offsetYSlider.value = DEFAULTS.offsetY;
     this.els.offsetYValue.textContent = DEFAULTS.offsetY + '%';
+    this.masterDirty = true;
     this.updateAdjustSummary();
     this.scheduleRender();
     this.showToast('已重置');
@@ -576,6 +578,7 @@ export class App {
     if (this.renderTimer) cancelAnimationFrame(this.renderTimer);
     this.els.canvasWrapper.classList.add('updating');
     this.renderTimer = requestAnimationFrame(() => {
+      if (this.masterDirty) this.renderMaster();
       this.renderPreview();
       // 异步加载相框
       if (this.state.frameEnabled && !this.state.frameImage && !this.state.frameLoading) {
