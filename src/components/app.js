@@ -2,7 +2,7 @@ import { SIZES, QUALITIES, PRESET_COLORS, DEFAULTS, DRAG_SENSITIVITY, DEFAULT_FR
 import { renderImage, loadImage, getPreviewSize } from '../utils/imageProcessor.js';
 import { downloadImage, getOutputFilename } from '../utils/download.js';
 import { ColorPicker } from './ColorPicker.js';
-import { loadFrameImage, getFrameUrl, getFrameBounds, renderFramed } from '../utils/frameProcessor.js';
+import { loadFrameImage, getFrameUrl, getFrameBounds, calcInnerRect, renderFramed } from '../utils/frameProcessor.js';
 
 const PINCH_SENSITIVITY = 0.45;
 
@@ -396,7 +396,7 @@ export class App {
       const fsAspect = eff.cmW / eff.cmH;
       const fsW2 = Math.round(dispW * 1.2);
       const fsH2 = Math.round(fsW2 / fsAspect);
-      renderImage(fsTmpCtx, this.state.image, fsW2, fsH2, {
+      renderImage(fsTmpCtx, this.state.image, fsiw, fsih, {
         zoom: this.state.zoom, offsetX: this.state.offsetX, offsetY: this.state.offsetY,
         rotation: this.state.rotation, fillColor: this.state.fillColor,
       });
@@ -589,14 +589,14 @@ export class App {
     canvas.height = pvh;
     this.els.canvasWrapper.style.height = pvh + 'px';
 
-    // 第一步：生成 cropCanvas（renderImage 完成裁剪）
-    const eff = this.getEffectiveSize();
-    const puzzleAspect = eff.cmW / eff.cmH;
-    const tmpW = Math.round(pvw * 1.2);
-    const tmpH = Math.round(tmpW / puzzleAspect);
+    // 计算内框在预览画布上的精确像素尺寸
+    const { iw, ih } = calcInnerRect(pvw, pvh, this.state.frameImage, this.state.frameBounds);
+    if (iw < 2 || ih < 2) return;
+
+    // 第一步：生成 cropCanvas，精确匹配内框尺寸（iw × ih）
     const cropCanvas = document.createElement('canvas');
     const cropCtx = cropCanvas.getContext('2d');
-    renderImage(cropCtx, this.state.image, tmpW, tmpH, {
+    renderImage(cropCtx, this.state.image, iw, ih, {
       zoom: this.state.zoom, offsetX: this.state.offsetX, offsetY: this.state.offsetY,
       rotation: this.state.rotation, fillColor: this.state.fillColor,
     });

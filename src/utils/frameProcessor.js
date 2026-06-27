@@ -52,12 +52,34 @@ export function getFrameBounds(sizeName, isLandscape) {
 }
 
 /**
+ * 计算内框在画布上的像素坐标和尺寸
+ * @param {number} canvasW - 画布宽度
+ * @param {number} canvasH - 画布高度
+ * @param {HTMLImageElement} frameImg - 相框图片
+ * @param {{left,top,right,bottom}} bounds - 内框坐标
+ * @returns {{ iL: number, iT: number, iw: number, ih: number }}
+ */
+/** @package */
+export function calcInnerRect(canvasW, canvasH, frameImg, bounds) {
+  const sx = canvasW / frameImg.naturalWidth;
+  const sy = canvasH / frameImg.naturalHeight;
+  return {
+    iL: Math.round(bounds.left * sx),
+    iT: Math.round(bounds.top * sy),
+    iw: Math.round((bounds.right - bounds.left) * sx),
+    ih: Math.round((bounds.bottom - bounds.top) * sy),
+  };
+}
+
+/**
  * 渲染带相框的效果图
+ *
+ * cropCanvas 必须精确等于内框尺寸（iw × ih），无需二次缩放
  *
  * @param {CanvasRenderingContext2D} ctx - 输出画布上下文
  * @param {number} canvasW - 输出宽度
  * @param {number} canvasH - 输出高度
- * @param {HTMLCanvasElement} cropCanvas - renderImage 输出的已完成拼图
+ * @param {HTMLCanvasElement} cropCanvas - renderImage 输出的已完成拼图（尺寸=iw×ih）
  * @param {HTMLImageElement} frameImg - 透明PNG相框图片
  * @param {{left,top,right,bottom}} bounds - 内框坐标
  */
@@ -65,16 +87,11 @@ export function renderFramed(ctx, canvasW, canvasH, cropCanvas, frameImg, bounds
   ctx.canvas.width = canvasW;
   ctx.canvas.height = canvasH;
 
-  // 计算内框在画布上的像素坐标
-  const sx = canvasW / frameImg.naturalWidth;
-  const sy = canvasH / frameImg.naturalHeight;
-  const iw = Math.round((bounds.right - bounds.left) * sx);
-  const ih = Math.round((bounds.bottom - bounds.top) * sy);
-  const iL = Math.round(bounds.left * sx);
-  const iT = Math.round(bounds.top * sy);
+  const { iL, iT, iw, ih } = calcInnerRect(canvasW, canvasH, frameImg, bounds);
+  if (iw < 2 || ih < 2) return;
 
-  // 绘制 cropCanvas 到内框区域
-  ctx.drawImage(cropCanvas, iL, iT, iw, ih);
+  // 绘制 cropCanvas 到内框位置（cropCanvas 尺寸已精确等于 iw×ih）
+  ctx.drawImage(cropCanvas, iL, iT);
 
   // 绘制透明PNG相框（内框透明，让 cropCanvas 透出）
   ctx.drawImage(frameImg, 0, 0, canvasW, canvasH);
