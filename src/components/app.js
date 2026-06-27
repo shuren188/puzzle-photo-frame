@@ -2,7 +2,7 @@ import { SIZES, QUALITIES, PRESET_COLORS, DEFAULTS, DRAG_SENSITIVITY, DEFAULT_FR
 import { renderImage, loadImage, getPreviewSize } from '../utils/imageProcessor.js';
 import { downloadImage, getOutputFilename } from '../utils/download.js';
 import { ColorPicker } from './ColorPicker.js';
-import { loadFrameImage, getFrameUrl, getFrameBounds, calcInnerRect, renderFramed } from '../utils/frameProcessor.js';
+import { loadFrameImage, getFrameUrl, getFrameBounds, calcInnerRect } from '../utils/frameProcessor.js';
 
 const PINCH_SENSITIVITY = 0.45;
 
@@ -390,17 +390,20 @@ export class App {
         dispH = Math.min(pvh, 680);
         dispW = Math.round(dispH * frameAspect);
       }
-      // 生成 cropCanvas
-      const fsTmp = document.createElement('canvas');
-      const fsTmpCtx = fsTmp.getContext('2d');
-      const fsAspect = eff.cmW / eff.cmH;
-      const fsW2 = Math.round(dispW * 1.2);
-      const fsH2 = Math.round(fsW2 / fsAspect);
-      renderImage(fsTmpCtx, this.state.image, fsiw, fsih, {
+      // 渲染拼图到临时 canvas（与 renderPlain 完全相同）
+      const fsPs = getPreviewSize(eff.cmW, eff.cmH, 200);
+      const fsPuz = document.createElement("canvas");
+      fsPuz.width = fsPs.width;
+      fsPuz.height = fsPs.height;
+      const fsPuzCtx = fsPuz.getContext("2d");
+      renderImage(fsPuzCtx, this.state.image, fsPs.width, fsPs.height, {
         zoom: this.state.zoom, offsetX: this.state.offsetX, offsetY: this.state.offsetY,
         rotation: this.state.rotation, fillColor: this.state.fillColor,
       });
-      renderFramed(ctx, dispW, dispH, fsTmp, this.state.frameImage, this.state.frameBounds);
+      // 计算内框坐标，拉伸映射
+      const { iL: fsiL, iT: fsiT, iw: fsiw, ih: fsih } = calcInnerRect(dispW, dispH, this.state.frameImage, this.state.frameBounds);
+      ctx.drawImage(fsPuz, 0, 0, fsPuz.width, fsPuz.height, fsiL, fsiT, fsiw, fsih);
+      ctx.drawImage(this.state.frameImage, 0, 0, dispW, dispH);
     } else {
       // 无相框
       renderImage(ctx, this.state.image, pvw, pvh, {
@@ -589,20 +592,28 @@ export class App {
     canvas.height = pvh;
     this.els.canvasWrapper.style.height = pvh + 'px';
 
-    // 计算内框在预览画布上的精确像素尺寸
-    const { iw, ih } = calcInnerRect(pvw, pvh, this.state.frameImage, this.state.frameBounds);
-    if (iw < 2 || ih < 2) return;
-
-    // 第一步：生成 cropCanvas，精确匹配内框尺寸（iw × ih）
-    const cropCanvas = document.createElement('canvas');
-    const cropCtx = cropCanvas.getContext('2d');
-    renderImage(cropCtx, this.state.image, iw, ih, {
+    // ========== 不再调用 renderImage() — 直接画拼图到临时 canvas ==========
+    // 用和 renderPlain() 完全相同的尺寸渲染拼图
+    const eff = this.getEffectiveSize();
+    const ps = getPreviewSize(eff.cmW, eff.cmH, 200);
+    const puzzleCanvas = document.createElement('canvas');
+    puzzleCanvas.width = ps.width;
+    puzzleCanvas.height = ps.height;
+    const puzzleCtx = puzzleCanvas.getContext('2d');
+    renderImage(puzzleCtx, this.state.image, ps.width, ps.height, {
       zoom: this.state.zoom, offsetX: this.state.offsetX, offsetY: this.state.offsetY,
       rotation: this.state.rotation, fillColor: this.state.fillColor,
     });
 
-    // 第二步：用 renderFramed 包装 cropCanvas
-    renderFramed(ctx, pvw, pvh, cropCanvas, this.state.frameImage, this.state.frameBounds);
+    // 计算内框在画布上的坐标
+    const { iL, iT, iw, ih } = calcInnerRect(pvw, pvh, this.state.frameImage, this.state.frameBounds);
+    if (iw < 2 || ih < 2) return;
+
+    // 九参数 drawImage：整个 puzzleCanvas 拉伸映射到内框区域
+    ctx.drawImage(puzzleCanvas, 0, 0, puzzleCanvas.width, puzzleCanvas.height, iL, iT, iw, ih);
+
+    // 绘制透明PNG相框（最上层）
+    ctx.drawImage(this.state.frameImage, 0, 0, pvw, pvh);
   }
 
   async handleDownload() {
