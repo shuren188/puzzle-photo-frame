@@ -2,7 +2,7 @@ import { SIZES, QUALITIES, PRESET_COLORS, DEFAULTS, DRAG_SENSITIVITY, DEFAULT_FR
 import { renderImage, loadImage, getPreviewSize } from '../utils/imageProcessor.js';
 import { downloadImage, getOutputFilename } from '../utils/download.js';
 import { ColorPicker } from './ColorPicker.js';
-import { loadFrameImage, getFrameUrl, getFrameBounds, createFrameMask, compositeFramedImage } from '../utils/frameProcessor.js';
+import { loadFrameImage, getFrameUrl, getFrameBounds, compositeFramedImage } from '../utils/frameProcessor.js';
 
 const PINCH_SENSITIVITY = 0.45;
 
@@ -26,7 +26,6 @@ export class App {
       frameEnabled: DEFAULT_FRAME_ENABLED,
       frameImage: null,
       frameBounds: null,
-      frameMask: null,
       frameLoading: false,
       frameLoadedUrl: null,
     };
@@ -220,7 +219,7 @@ export class App {
   async ensureFrameLoaded() {
     const eff = this.getEffectiveSize();
     const url = getFrameUrl(this.state.selectedSize.name, eff.isLandscape);
-    if (!url) { this.state.frameImage = null; this.state.frameBounds = null; this.state.frameMask = null; return; }
+    if (!url) { this.state.frameImage = null; this.state.frameBounds = null; return; }
 
     // 已加载相同 URL 且成功 → 无需重复加载
     if (this.state.frameLoadedUrl === url && this.state.frameImage) return;
@@ -231,15 +230,12 @@ export class App {
       this.state.frameImage = frameImg;
       const bounds = getFrameBounds(frameImg, this.state.selectedSize.name, eff.isLandscape);
       this.state.frameBounds = bounds;
-      // 预处理内框透明的相框蒙版
-      this.state.frameMask = createFrameMask(frameImg, bounds);
       this.state.frameLoadedUrl = url;
       this.scheduleRender();
     } catch (err) {
       console.error('相框加载失败:', err);
       this.state.frameImage = null;
       this.state.frameBounds = null;
-      this.state.frameMask = null;
       this.state.frameLoadedUrl = null; // 允许下次重试
     }
     this.state.frameLoading = false;
@@ -383,10 +379,10 @@ export class App {
     let pvw = 480, pvh = Math.round(pvw / ta);
     if (pvh > 680) { pvh = 680; pvw = Math.round(pvh * ta); }
 
-    if (this.state.frameEnabled && this.state.frameMask) {
+    if (this.state.frameEnabled && this.state.frameImage && this.state.frameBounds) {
       // 全屏显示带相框效果
-      const fw = this.state.frameMask.width;
-      const fh = this.state.frameMask.height;
+      const fw = this.state.frameImage.naturalWidth;
+      const fh = this.state.frameImage.naturalHeight;
       const frameAspect = fw / fh;
       let dispW, dispH;
       if (frameAspect > 1) {
@@ -407,7 +403,7 @@ export class App {
         rotation: this.state.rotation, fillColor: this.state.fillColor,
       });
       // 第二步：两层合成
-      compositeFramedImage(ctx, fsPuzCanvas, this.state.frameMask, this.state.frameBounds, dispW, dispH);
+      compositeFramedImage(ctx, fsPuzCanvas, this.state.frameImage, this.state.frameBounds, dispW, dispH);
     } else {
       // 无相框，显示拼图原图
       renderImage(ctx, this.state.image, pvw, pvh, {
@@ -513,7 +509,7 @@ export class App {
     this.state.originalFile = null;
     this.state.frameImage = null;
     this.state.frameBounds = null;
-    this.state.frameMask = null;
+    
     this.els.uploadPlaceholder.style.display = 'flex';
     this.els.previewContainer.style.display = 'none';
     this.els.controlsSection.style.display = 'none';
@@ -556,7 +552,7 @@ export class App {
     const canvas = this.els.previewCanvas;
     const ctx = canvas.getContext('2d');
 
-    if (this.state.frameEnabled && this.state.frameMask) {
+    if (this.state.frameEnabled && this.state.frameImage && this.state.frameBounds) {
       this.renderFramedPreview(ctx, canvas);
     } else {
       this.renderPlainPreview(ctx, canvas);
@@ -578,10 +574,10 @@ export class App {
   }
 
   renderFramedPreview(ctx, canvas) {
-    if (!this.state.image || !this.state.frameMask) return;
+    if (!this.state.image || !this.state.frameImage || !this.state.frameBounds) return;
 
-    const fw = this.state.frameMask.width;
-    const fh = this.state.frameMask.height;
+    const fw = this.state.frameImage.naturalWidth;
+    const fh = this.state.frameImage.naturalHeight;
     const frameAspect = fw / fh;
 
     // 计算预览尺寸：以 frame 为基准，限制高度约 200px
@@ -613,7 +609,7 @@ export class App {
     });
 
     // 第二步：两层合成（拼图 + 相框蒙版）
-    compositeFramedImage(ctx, puzzleCanvas, this.state.frameMask, this.state.frameBounds, pvw, pvh);
+    compositeFramedImage(ctx, puzzleCanvas, this.state.frameImage, this.state.frameBounds, pvw, pvh);
   }
 
   async handleDownload() {
@@ -676,7 +672,7 @@ export class App {
   clearFrameCache() {
     this.state.frameImage = null;
     this.state.frameBounds = null;
-    this.state.frameMask = null;
+    
     this.state.frameLoadedUrl = null;
   }
 
