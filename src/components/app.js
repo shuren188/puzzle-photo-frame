@@ -2,7 +2,7 @@ import { SIZES, QUALITIES, PRESET_COLORS, DEFAULTS, DRAG_SENSITIVITY, DEFAULT_FR
 import { renderImage, loadImage, getPreviewSize } from '../utils/imageProcessor.js';
 import { downloadImage, getOutputFilename } from '../utils/download.js';
 import { ColorPicker } from './ColorPicker.js';
-import { loadFrameImage, getFrameUrl, getFrameBounds, buildPuzzleCanvas, getNaturalInnerSize, renderFrame } from '../utils/frameProcessor.js';
+import { loadFrameImage, getFrameUrl, getFrameInfo, buildPuzzleCanvas, renderFrame } from '../utils/frameProcessor.js';
 
 const PINCH_SENSITIVITY = 0.45;
 
@@ -25,7 +25,7 @@ export class App {
       // 相框相关状态
       frameEnabled: DEFAULT_FRAME_ENABLED,
       frameImage: null,
-      frameBounds: null,
+      frameInfo: null,
       frameLoading: false,
       frameLoadedUrl: null,
     };
@@ -218,7 +218,7 @@ export class App {
   async ensureFrameLoaded() {
     const eff = this.getEffectiveSize();
     const url = getFrameUrl(this.state.selectedSize.name, eff.isLandscape);
-    if (!url) { this.state.frameImage = null; this.state.frameBounds = null; return; }
+    if (!url) { this.state.frameImage = null; this.state.frameInfo = null; return; }
 
     if (this.state.frameLoadedUrl === url && this.state.frameImage) return;
 
@@ -226,14 +226,14 @@ export class App {
     try {
       const frameImg = await loadFrameImage(url);
       this.state.frameImage = frameImg;
-      const bounds = getFrameBounds(this.state.selectedSize.name, eff.isLandscape);
-      this.state.frameBounds = bounds;
+      const info = getFrameInfo(this.state.selectedSize.name, eff.isLandscape);
+      this.state.frameInfo = info;
       this.state.frameLoadedUrl = url;
       this.scheduleRender();
     } catch (err) {
       console.error('相框加载失败:', err);
       this.state.frameImage = null;
-      this.state.frameBounds = null;
+      this.state.frameInfo = null;
       this.state.frameLoadedUrl = null;
     }
     this.state.frameLoading = false;
@@ -377,7 +377,7 @@ export class App {
     let pvw = 480, pvh = Math.round(pvw / ta);
     if (pvh > 680) { pvh = 680; pvw = Math.round(pvh * ta); }
 
-    if (this.state.frameEnabled && this.state.frameImage && this.state.frameBounds) {
+    if (this.state.frameEnabled && this.state.frameImage && this.state.frameInfo) {
       const fw = this.state.frameImage.naturalWidth;
       const fh = this.state.frameImage.naturalHeight;
       const frameAspect = fw / fh;
@@ -389,16 +389,15 @@ export class App {
         dispH = Math.min(pvh, 680);
         dispW = Math.round(dispH * frameAspect);
       }
-            // Puzzle = 内框自然像素尺寸
-      const fBounds = this.state.frameBounds;
-      const { width: fpuzW, height: fpuzH } = getNaturalInnerSize(fBounds);
-      const fpuzzle = buildPuzzleCanvas(this.state.image, fpuzW, fpuzH, {
+      // Puzzle = 洞口尺寸（holeW × holeH），完全匹配不需要缩放
+      const finfo = this.state.frameInfo;
+      const fpuzzle = buildPuzzleCanvas(this.state.image, finfo.holeW, finfo.holeH, {
         zoom: this.state.zoom, offsetX: this.state.offsetX, offsetY: this.state.offsetY,
         rotation: this.state.rotation, fillColor: this.state.fillColor,
       });
 
       // Canvas = PNG 原始尺寸，3参数drawImage零缩放合成
-      renderFrame(ctx, fpuzzle, this.state.frameImage, fBounds);
+      renderFrame(ctx, fpuzzle, this.state.frameImage, finfo);
     } else {
       renderImage(ctx, this.state.image, pvw, pvh, {
         zoom: this.state.zoom, offsetX: this.state.offsetX, offsetY: this.state.offsetY,
@@ -461,7 +460,7 @@ export class App {
       this.state.rotation = DEFAULTS.rotation;
       this.state.fillColor = DEFAULTS.fillColor;
       this.state.frameImage = null;
-      this.state.frameBounds = null;
+      this.state.frameInfo = null;
       this.state.frameLoadedUrl = null;
       this.els.zoomSlider.value = DEFAULTS.zoom;
       this.els.zoomValue.textContent = DEFAULTS.zoom + '%';
@@ -494,7 +493,7 @@ export class App {
     this.state.image = null;
     this.state.originalFile = null;
     this.state.frameImage = null;
-    this.state.frameBounds = null;
+    this.state.frameInfo = null;
     this.els.uploadPlaceholder.style.display = 'flex';
     this.els.previewContainer.style.display = 'none';
     this.els.controlsSection.style.display = 'none';
@@ -537,7 +536,7 @@ export class App {
     const ctx = canvas.getContext('2d');
     const eff = this.getEffectiveSize();
 
-    if (this.state.frameEnabled && this.state.frameImage && this.state.frameBounds) {
+    if (this.state.frameEnabled && this.state.frameImage && this.state.frameInfo) {
       this.renderFramed(ctx, canvas, eff);
     } else {
       this.renderPlain(ctx, canvas, eff);
@@ -559,10 +558,10 @@ export class App {
   }
 
   renderFramed(ctx, canvas, eff) {
-    if (!this.state.frameImage || !this.state.frameBounds) return;
+    if (!this.state.frameImage || !this.state.frameInfo) return;
 
     const frameImg = this.state.frameImage;
-    const bounds = this.state.frameBounds;
+    const info = this.state.frameInfo;
 
     // Canvas = PNG 原始尺寸（像素级精准）
     canvas.width = frameImg.naturalWidth;
@@ -570,14 +569,14 @@ export class App {
     this.els.canvasWrapper.style.height = '';
 
     // Puzzle = 内框自然像素尺寸（如 1465×2021）
-    const { width: puzW, height: puzH } = getNaturalInnerSize(bounds);
-    const puzzle = buildPuzzleCanvas(this.state.image, puzW, puzH, {
+    
+    const puzzle = buildPuzzleCanvas(this.state.image, info.holeW, info.holeH, {
       zoom: this.state.zoom, offsetX: this.state.offsetX, offsetY: this.state.offsetY,
       rotation: this.state.rotation, fillColor: this.state.fillColor,
     });
 
     // 合成：3 参数 drawImage，零缩放
-    renderFrame(ctx, puzzle, frameImg, bounds);
+    renderFrame(ctx, puzzle, frameImg, info);
   }
 
   async handleDownload() {
@@ -636,7 +635,7 @@ export class App {
 
   clearFrameCache() {
     this.state.frameImage = null;
-    this.state.frameBounds = null;
+    this.state.frameInfo = null;
     this.state.frameLoadedUrl = null;
   }
 

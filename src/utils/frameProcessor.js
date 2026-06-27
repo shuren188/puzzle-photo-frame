@@ -1,19 +1,17 @@
 /**
- * 相框预览模块 v7.0.0
+ * 相框预览模块 v8.0.0
  *
- * 核心原则：
- *   - PuzzleCanvas 尺寸 = 内框自然像素尺寸（如 1465×2021）
- *   - 输出 Canvas 尺寸 = PNG 原始尺寸
- *   - drawImage 全部使用 3 参数（零缩放）
- *   - CSS 控制视觉显示大小
+ * 核心原则：所有尺寸硬编码，零缩放、零计算
  *
- * 函数：
- *   loadFrameImage()       — 加载相框 PNG
- *   getFrameUrl()          — 获取相框 URL
- *   getFrameBounds()       — 获取内框坐标
- *   buildPuzzleCanvas()    — 唯二调用 renderImage 的地方
- *   getNaturalInnerSize()  — 获取内框自然像素宽高
- *   renderFrame()          — 两个 3-param drawImage
+ * 每个相框的：
+ *   - frameWidth / frameHeight = PNG 原始像素尺寸
+ *   - holeX / holeY = 内框左上角坐标
+ *   - holeWidth / holeHeight = 内框像素尺寸
+ *
+ * puzzleCanvas 直接生成 holeWidth × holeHeight
+ * drawImage(puzzleCanvas, holeX, holeY) — 3参数，零缩放
+ * canvas 尺寸 = frameWidth × frameHeight
+ * drawImage(frame, 0, 0) — 3参数，零缩放
  */
 
 import { renderImage } from './imageProcessor.js';
@@ -23,17 +21,17 @@ const FILE_MAP = {
   '200片': '200.png', '300/520片': '300.png',
 };
 
-const BOUNDS_MAP = {
-  'true_35片':  { left: 268, top: 230, right: 2189, bottom: 1691 },
-  'true_70片':  { left: 310, top: 244, right: 2213, bottom: 1697 },
-  'true_120片': { left: 262, top: 198, right: 2201, bottom: 1791 },
-  'true_200片': { left: 2,   top: 156, right: 2311, bottom: 1645 },
-  'true_300/520片':  { left: 28,  top: 146, right: 2138, bottom: 1665 },
-  'false_35片': { left: 260, top: 372, right: 1725, bottom: 2393 },
-  'false_70片': { left: 266, top: 354, right: 1717, bottom: 2069 },
-  'false_120片':{ left: 152, top: 256, right: 1707, bottom: 2297 },
-  'false_200片':{ left: 180, top: 202, right: 1715, bottom: 2343 },
-  'false_300/520片': { left: 26,  top: 182, right: 1631, bottom: 2395 },
+const FRAME_INFO = {
+  'true_35片':  { frameW: 2276, frameH: 1696, holeX: 268, holeY: 230, holeW: 1921, holeH: 1461 },
+  'true_70片':  { frameW: 2346, frameH: 1792, holeX: 310, holeY: 244, holeW: 1903, holeH: 1453 },
+  'true_120片': { frameW: 2304, frameH: 1856, holeX: 262, holeY: 198, holeW: 1939, holeH: 1593 },
+  'true_200片': { frameW: 2348, frameH: 1728, holeX: 2,   holeY: 156, holeW: 2309, holeH: 1489 },
+  'true_300/520片':  { frameW: 2293, frameH: 1696, holeX: 28,  holeY: 146, holeW: 2110, holeH: 1519 },
+  'false_35片': { frameW: 1792, frameH: 2400, holeX: 260, holeY: 372, holeW: 1465, holeH: 2021 },
+  'false_70片': { frameW: 1792, frameH: 2400, holeX: 266, holeY: 354, holeW: 1451, holeH: 1715 },
+  'false_120片':{ frameW: 1792, frameH: 2400, holeX: 152, holeY: 256, holeW: 1555, holeH: 2041 },
+  'false_200片':{ frameW: 1792, frameH: 2400, holeX: 180, holeY: 202, holeW: 1535, holeH: 2141 },
+  'false_300/520片': { frameW: 1792, frameH: 2400, holeX: 26,  holeY: 182, holeW: 1605, holeH: 2213 },
 };
 
 export function loadFrameImage(url) {
@@ -51,20 +49,16 @@ export function getFrameUrl(sizeName, isLandscape) {
   return file ? `${import.meta.env.BASE_URL}${folder}/${file}` : null;
 }
 
-export function getFrameBounds(sizeName, isLandscape) {
+export function getFrameInfo(sizeName, isLandscape) {
   const key = `${isLandscape}_${sizeName}`;
-  const bounds = BOUNDS_MAP[key];
-  if (!bounds) throw new Error(`缺少相框内框坐标配置: ${key}`);
-  return bounds;
+  const info = FRAME_INFO[key];
+  if (!info) throw new Error(`缺少相框配置: ${key}`);
+  return info;
 }
 
 /**
  * 生成拼图画布（唯二调用 renderImage 的地方）
- * @param {HTMLImageElement} img
- * @param {number} w - 宽度（像素）
- * @param {number} h - 高度（像素）
- * @param {object} opts - zoom/offsetX/offsetY/rotation/fillColor
- * @returns {HTMLCanvasElement}
+ * w, h 直接传入 info.holeW, info.holeH
  */
 export function buildPuzzleCanvas(img, w, h, opts) {
   const canvas = document.createElement('canvas');
@@ -75,34 +69,22 @@ export function buildPuzzleCanvas(img, w, h, opts) {
 }
 
 /**
- * 获取内框自然像素尺寸
- * 用于 buildPuzzleCanvas 的 w, h 参数
- */
-export function getNaturalInnerSize(bounds) {
-  return {
-    width: bounds.right - bounds.left,
-    height: bounds.bottom - bounds.top,
-  };
-}
-
-/**
- * 最终合成：拼图 + 相框
- * 全部使用 3 参数 drawImage（零缩放）
+ * 最终合成：两个 3-参数 drawImage，零缩放
  *
- * Canvas 尺寸 = PNG 原始尺寸
- * drawImage(puzzle, left, top) — puzzle 尺寸 = 内框自然尺寸
- * drawImage(frame, 0, 0) — frame 尺寸 = PNG 原始尺寸
+ * @param {CanvasRenderingContext2D} ctx
+ * @param {HTMLCanvasElement} puzzleCanvas - 尺寸 = holeW × holeH
+ * @param {HTMLImageElement} frameImg - 相框 PNG
+ * @param {{frameW,frameH,holeX,holeY,holeW,holeH}} info - FRAME_INFO
  */
-export function renderFrame(ctx, puzzleCanvas, frameImg, bounds) {
-  const fw = frameImg.naturalWidth;
-  const fh = frameImg.naturalHeight;
+export function renderFrame(ctx, puzzleCanvas, frameImg, info) {
+  // Canvas = 相框原始尺寸（像素级精准）
+  ctx.canvas.width = info.frameW;
+  ctx.canvas.height = info.frameH;
 
-  ctx.canvas.width = fw;
-  ctx.canvas.height = fh;
+  // drawImage 1: 拼图直接贴入洞口（3参数，零缩放）
+  // puzzleCanvas 尺寸 = holeW × holeH（完全匹配）
+  ctx.drawImage(puzzleCanvas, info.holeX, info.holeY);
 
-  // Step 1: 拼图直接贴入内框（3参数，零缩放）
-  ctx.drawImage(puzzleCanvas, bounds.left, bounds.top);
-
-  // Step 2: 透明PNG相框覆盖（3参数，零缩放）
+  // drawImage 2: 透明PNG相框覆盖（3参数，零缩放）
   ctx.drawImage(frameImg, 0, 0);
 }
