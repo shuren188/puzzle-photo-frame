@@ -553,7 +553,13 @@ export class App {
     const ctx = canvas.getContext('2d');
 
     if (this.state.frameEnabled && this.state.frameImage && this.state.frameBounds) {
-      this.renderFramedPreview(ctx, canvas);
+      try {
+        this.renderFramedPreview(ctx, canvas);
+      } catch (e) {
+        console.error('相框渲染失败:', e);
+        this.showToast('相框渲染失败: ' + e.message);
+        this.renderPlainPreview(ctx, canvas);
+      }
     } else {
       this.renderPlainPreview(ctx, canvas);
     }
