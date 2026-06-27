@@ -2,7 +2,7 @@ import { SIZES, QUALITIES, PRESET_COLORS, DEFAULTS, DRAG_SENSITIVITY, DEFAULT_FR
 import { renderImage, loadImage, getPreviewSize } from '../utils/imageProcessor.js';
 import { downloadImage, getOutputFilename } from '../utils/download.js';
 import { ColorPicker } from './ColorPicker.js';
-import { loadFrameImage, getFrameUrl, getFrameBounds, calcInnerRect } from '../utils/frameProcessor.js';
+import { loadFrameImage, getFrameUrl, getFrameBounds, buildPuzzleCanvas, calcInnerRect, renderFrame } from '../utils/frameProcessor.js';
 
 const PINCH_SENSITIVITY = 0.45;
 
@@ -389,20 +389,22 @@ export class App {
         dispH = Math.min(pvh, 680);
         dispW = Math.round(dispH * frameAspect);
       }
-      // 填充背景色
       ctx.fillStyle = this.state.fillColor || '#FFFFFF';
       ctx.fillRect(0, 0, dispW, dispH);
 
-      // 统一拼图生成
-      const puzzle = this.createPuzzlePreviewCanvas();
+      // 以内框尺寸生成拼图画布
+      const fw2 = this.state.frameImage.naturalWidth;
+      const fh2 = this.state.frameImage.naturalHeight;
+      const finnerRect = calcInnerRect(dispW, dispH, fw2, fh2, this.state.frameBounds);
+      const fpuzW = Math.round(finnerRect.width);
+      const fpuzH = Math.round(finnerRect.height);
+      const fpuzzle = buildPuzzleCanvas(this.state.image, fpuzW, fpuzH, {
+        zoom: this.state.zoom, offsetX: this.state.offsetX, offsetY: this.state.offsetY,
+        rotation: this.state.rotation, fillColor: this.state.fillColor,
+      });
 
-      // contain-fit 等比例缩小到内框
-      const { iL: fsiL, iT: fsiT, iw: fsiw, ih: fsih } = calcInnerRect(dispW, dispH, this.state.frameImage, this.state.frameBounds);
-      const fscale = Math.min(fsiw / puzzle.width, fsih / puzzle.height);
-      const ffdW = puzzle.width * fscale;
-      const ffdH = puzzle.height * fscale;
-      ctx.drawImage(puzzle, 0, 0, puzzle.width, puzzle.height, fsiL + (fsiw - ffdW) / 2, fsiT + (fsih - ffdH) / 2, ffdW, ffdH);
-      ctx.drawImage(this.state.frameImage, 0, 0, dispW, dispH);
+      // 合成
+      renderFrame(ctx, dispW, dispH, fpuzzle, this.state.frameImage, finnerRect);
     } else {
       renderImage(ctx, this.state.image, pvw, pvh, {
         zoom: this.state.zoom, offsetX: this.state.offsetX, offsetY: this.state.offsetY,
@@ -550,26 +552,15 @@ export class App {
     this.els.canvasWrapper.classList.remove('updating');
   }
 
-  /** 统一生成拼图预览（只调用一次 renderImage） */
-  createPuzzlePreviewCanvas() {
-    const eff = this.getEffectiveSize();
-    const ps = getPreviewSize(eff.cmW, eff.cmH, 200);
-    const canvas = document.createElement('canvas');
-    canvas.width = ps.width;
-    canvas.height = ps.height;
-    renderImage(canvas.getContext('2d'), this.state.image, ps.width, ps.height, {
-      zoom: this.state.zoom, offsetX: this.state.offsetX, offsetY: this.state.offsetY,
-      rotation: this.state.rotation, fillColor: this.state.fillColor,
-    });
-    return canvas;
-  }
-
   renderPlain(ctx, canvas, eff) {
     const ps = getPreviewSize(eff.cmW, eff.cmH, 200);
     canvas.width = ps.width;
     canvas.height = ps.height;
     this.els.canvasWrapper.style.height = ps.height + 'px';
-    const puzzle = this.createPuzzlePreviewCanvas();
+    const puzzle = buildPuzzleCanvas(this.state.image, ps.width, ps.height, {
+      zoom: this.state.zoom, offsetX: this.state.offsetX, offsetY: this.state.offsetY,
+      rotation: this.state.rotation, fillColor: this.state.fillColor,
+    });
     ctx.drawImage(puzzle, 0, 0);
   }
 
@@ -597,23 +588,19 @@ export class App {
     ctx.fillStyle = this.state.fillColor || '#FFFFFF';
     ctx.fillRect(0, 0, canvas.width, canvas.height);
 
-    // 统一生成拼图（与 renderPlain 完全相同）
-    const puzzle = this.createPuzzlePreviewCanvas();
+    // 计算内框坐标
+    const innerRect = calcInnerRect(canvas.width, canvas.height, fw, fh, this.state.frameBounds);
 
-    // 计算内框坐标（全浮点，不取整）
-    const { iL, iT, iw, ih } = calcInnerRect(canvas.width, canvas.height, this.state.frameImage, this.state.frameBounds);
+    // 以内框尺寸生成拼图画布（renderImage一次）
+    const puzzleW = Math.round(innerRect.width);
+    const puzzleH = Math.round(innerRect.height);
+    const puzzle = buildPuzzleCanvas(this.state.image, puzzleW, puzzleH, {
+      zoom: this.state.zoom, offsetX: this.state.offsetX, offsetY: this.state.offsetY,
+      rotation: this.state.rotation, fillColor: this.state.fillColor,
+    });
 
-    // contain-fit：等比例缩小到内框，完整显示，留白区域用背景色
-    const scale = Math.min(iw / puzzle.width, ih / puzzle.height);
-    const dW = puzzle.width * scale;
-    const dH = puzzle.height * scale;
-    const dX = iL + (iw - dW) / 2;
-    const dY = iT + (ih - dH) / 2;
-
-    ctx.drawImage(puzzle, 0, 0, puzzle.width, puzzle.height, dX, dY, dW, dH);
-
-    // 覆盖透明PNG相框
-    ctx.drawImage(this.state.frameImage, 0, 0, canvas.width, canvas.height);
+    // 合成：拼图精确贴入内框 + 相框覆盖
+    renderFrame(ctx, canvas.width, canvas.height, puzzle, this.state.frameImage, innerRect);
   }
 
   async handleDownload() {

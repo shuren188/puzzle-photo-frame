@@ -1,15 +1,10 @@
 /**
- * 相框预览模块 v4.0.0
+ * 相框预览模块 v6.0.0
  *
- * 唯一职责：把已完成的 cropCanvas 贴进透明PNG相框
- *
- * 渲染流程（固定3步，不做任何图片分析）：
- *   ① 设置画布尺寸
- *   ② 绘制 cropCanvas 到内框区域（坐标来自固定配置）
- *   ③ 绘制透明PNG相框（最上层，内框透明让 cropCanvas 透出）
- *
- * 没有：getImageData / putImageData / brightness / alpha / contain / cover / fit
+ * 只做一件事：把已完成的拼图放进透明PNG相框
  */
+
+import { renderImage } from './imageProcessor.js';
 
 const FILE_MAP = {
   '35片': '35.png', '70片': '70.png', '120片': '120.png',
@@ -52,50 +47,46 @@ export function getFrameBounds(sizeName, isLandscape) {
 }
 
 /**
- * 计算内框在画布上的像素坐标和尺寸
- * 注意：不进行任何取整操作，保留浮点精度
- *       浏览器 drawImage 会自行处理子像素抗锯齿
+ * 生成拼图画布（唯一调用 renderImage 的地方）
+ * 预览和相框模式共用此函数
  */
-/** @package */
-export function calcInnerRect(canvasW, canvasH, frameImg, bounds) {
-  const sx = canvasW / frameImg.naturalWidth;
-  const sy = canvasH / frameImg.naturalHeight;
+export function buildPuzzleCanvas(img, w, h, opts) {
+  const canvas = document.createElement('canvas');
+  canvas.width = w;
+  canvas.height = h;
+  renderImage(canvas.getContext('2d'), img, w, h, opts);
+  return canvas;
+}
+
+/**
+ * 计算内框在画布上的坐标（纯浮点，不取整）
+ */
+export function calcInnerRect(canvasW, canvasH, frameNaturalW, frameNaturalH, bounds) {
+  const sx = canvasW / frameNaturalW;
+  const sy = canvasH / frameNaturalH;
   return {
-    iL: bounds.left * sx,
-    iT: bounds.top * sy,
-    iw: (bounds.right - bounds.left) * sx,
-    ih: (bounds.bottom - bounds.top) * sy,
+    left: bounds.left * sx,
+    top: bounds.top * sy,
+    width: (bounds.right - bounds.left) * sx,
+    height: (bounds.bottom - bounds.top) * sy,
   };
 }
 
 /**
- * 渲染带相框的效果图
- *
- * 使用九参数 drawImage 将整个 cropCanvas（包括白边）
- * 完整映射到相框内框区域。
- *
- * @param {CanvasRenderingContext2D} ctx - 输出画布上下文
- * @param {number} canvasW - 输出宽度
- * @param {number} canvasH - 输出高度
- * @param {HTMLCanvasElement} cropCanvas - renderImage 输出的已完成拼图
- * @param {HTMLImageElement} frameImg - 透明PNG相框图片
- * @param {{left,top,right,bottom}} bounds - 内框坐标
+ * 最终合成：两个 drawImage
+ * 不做任何图片编辑、缩放计算、比例适配
  */
-export function renderFramed(ctx, canvasW, canvasH, cropCanvas, frameImg, bounds) {
-  ctx.canvas.width = canvasW;
-  ctx.canvas.height = canvasH;
+export function renderFrame(ctx, canvasW, canvasH, puzzleCanvas, frameImg, innerRect) {
+  ctx.canvas.width = Math.round(canvasW);
+  ctx.canvas.height = Math.round(canvasH);
 
-  const { iL, iT, iw, ih } = calcInnerRect(canvasW, canvasH, frameImg, bounds);
-  if (iw < 2 || ih < 2) return;
-
-  // 九参数 drawImage：将整个 cropCanvas（0,0 到宽高）拉伸映射到内框区域
-  // 确保 renderImage 输出的全部内容（照片+白边+填充色）完整显示
+  // drawImage 1: 拼图完整映射到内框区域
   ctx.drawImage(
-    cropCanvas,
-    0, 0, cropCanvas.width, cropCanvas.height,
-    iL, iT, iw, ih
+    puzzleCanvas,
+    0, 0, puzzleCanvas.width, puzzleCanvas.height,
+    innerRect.left, innerRect.top, innerRect.width, innerRect.height
   );
 
-  // 绘制透明PNG相框（内框透明，让 cropCanvas 透出）
-  ctx.drawImage(frameImg, 0, 0, canvasW, canvasH);
+  // drawImage 2: 透明PNG相框覆盖
+  ctx.drawImage(frameImg, 0, 0, ctx.canvas.width, ctx.canvas.height);
 }
