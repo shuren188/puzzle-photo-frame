@@ -407,7 +407,7 @@ export class App {
         rotation: this.state.rotation, fillColor: this.state.fillColor,
       });
       // 第二步：两层合成
-      compositeFramedImage(ctx, fsPuzCanvas, this.state.frameMask, dispW, dispH);
+      compositeFramedImage(ctx, fsPuzCanvas, this.state.frameMask, this.state.frameBounds, dispW, dispH);
     } else {
       // 无相框，显示拼图原图
       renderImage(ctx, this.state.image, pvw, pvh, {
@@ -613,7 +613,7 @@ export class App {
     });
 
     // 第二步：两层合成（拼图 + 相框蒙版）
-    compositeFramedImage(ctx, puzzleCanvas, this.state.frameMask, pvw, pvh);
+    compositeFramedImage(ctx, puzzleCanvas, this.state.frameMask, this.state.frameBounds, pvw, pvh);
   }
 
   async handleDownload() {
