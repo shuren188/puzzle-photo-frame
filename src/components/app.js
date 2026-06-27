@@ -2,7 +2,7 @@ import { SIZES, QUALITIES, PRESET_COLORS, DEFAULTS, DRAG_SENSITIVITY, DEFAULT_FR
 import { renderImage, loadImage, getPreviewSize } from '../utils/imageProcessor.js';
 import { downloadImage, getOutputFilename } from '../utils/download.js';
 import { ColorPicker } from './ColorPicker.js';
-import { loadFrameImage, getFrameUrl, getFrameBounds, compositeFramedImage } from '../utils/frameProcessor.js';
+import { loadFrameImage, getFrameUrl, getFrameBounds, createBorderMask, compositeFramedImage } from '../utils/frameProcessor.js';
 
 const PINCH_SENSITIVITY = 0.45;
 
@@ -26,6 +26,7 @@ export class App {
       frameEnabled: DEFAULT_FRAME_ENABLED,
       frameImage: null,
       frameBounds: null,
+      borderMask: null,
       frameLoading: false,
       frameLoadedUrl: null,
     };
@@ -219,7 +220,7 @@ export class App {
   async ensureFrameLoaded() {
     const eff = this.getEffectiveSize();
     const url = getFrameUrl(this.state.selectedSize.name, eff.isLandscape);
-    if (!url) { this.state.frameImage = null; this.state.frameBounds = null; return; }
+    if (!url) { this.state.frameImage = null; this.state.frameBounds = null; this.state.borderMask = null; return; }
 
     // 已加载相同 URL 且成功 → 无需重复加载
     if (this.state.frameLoadedUrl === url && this.state.frameImage) return;
@@ -230,6 +231,7 @@ export class App {
       this.state.frameImage = frameImg;
       const bounds = getFrameBounds(frameImg, this.state.selectedSize.name, eff.isLandscape);
       this.state.frameBounds = bounds;
+      this.state.borderMask = createBorderMask(frameImg, bounds);
       this.state.frameLoadedUrl = url;
       this.scheduleRender();
     } catch (err) {
@@ -379,10 +381,10 @@ export class App {
     let pvw = 480, pvh = Math.round(pvw / ta);
     if (pvh > 680) { pvh = 680; pvw = Math.round(pvh * ta); }
 
-    if (this.state.frameEnabled && this.state.frameImage && this.state.frameBounds) {
+    if (this.state.frameEnabled && this.state.borderMask) {
       // 全屏显示带相框效果
-      const fw = this.state.frameImage.naturalWidth;
-      const fh = this.state.frameImage.naturalHeight;
+      const fw = this.state.borderMask.width;
+      const fh = this.state.borderMask.height;
       const frameAspect = fw / fh;
       let dispW, dispH;
       if (frameAspect > 1) {
@@ -402,8 +404,8 @@ export class App {
         zoom: this.state.zoom, offsetX: this.state.offsetX, offsetY: this.state.offsetY,
         rotation: this.state.rotation, fillColor: this.state.fillColor,
       });
-      // 第二步：两层合成
-      compositeFramedImage(ctx, fsPuzCanvas, this.state.frameImage, this.state.frameBounds, dispW, dispH);
+      // 第二步：两层合成（拼图铺底 + 边框蒙版覆盖）
+      compositeFramedImage(ctx, fsPuzCanvas, this.state.borderMask, dispW, dispH);
     } else {
       // 无相框，显示拼图原图
       renderImage(ctx, this.state.image, pvw, pvh, {
@@ -552,7 +554,7 @@ export class App {
     const canvas = this.els.previewCanvas;
     const ctx = canvas.getContext('2d');
 
-    if (this.state.frameEnabled && this.state.frameImage && this.state.frameBounds) {
+    if (this.state.frameEnabled && this.state.borderMask) {
       try {
         this.renderFramedPreview(ctx, canvas);
       } catch (e) {
@@ -580,11 +582,11 @@ export class App {
   }
 
   renderFramedPreview(ctx, canvas) {
-    if (!this.state.image || !this.state.frameImage || !this.state.frameBounds) return;
+    if (!this.state.image || !this.state.borderMask) return;
 
-    const fw = this.state.frameImage.naturalWidth;
-    const fh = this.state.frameImage.naturalHeight;
-    const frameAspect = fw / fh;
+    const bmW = this.state.borderMask.width;
+    const bmH = this.state.borderMask.height;
+    const frameAspect = bmW / bmH;
 
     // 计算预览尺寸：以 frame 为基准，限制高度约 200px
     let pvw, pvh;
@@ -601,10 +603,11 @@ export class App {
     canvas.height = pvh;
     this.els.canvasWrapper.style.height = pvh + 'px';
 
-    // 第一步：用 renderImage 渲染拼图（使用拼图尺寸比例）
+    // 第一步：用 renderImage 渲染拼图
     const eff = this.getEffectiveSize();
     const puzzleAspect = eff.cmW / eff.cmH;
-    const effW = Math.round(pvw);
+    // 拼图画布尺寸放大，保证 cover-fitted 到画布时有足够分辨率
+    const effW = Math.round(pvw * 1.5);
     const effH = Math.round(effW / puzzleAspect);
 
     const puzzleCanvas = document.createElement('canvas');
@@ -614,8 +617,8 @@ export class App {
       rotation: this.state.rotation, fillColor: this.state.fillColor,
     });
 
-    // 第二步：两层合成（拼图 + 相框蒙版）
-    compositeFramedImage(ctx, puzzleCanvas, this.state.frameImage, this.state.frameBounds, pvw, pvh);
+    // 第二步：两步合成（拼图铺底 + 边框蒙版覆盖）
+    compositeFramedImage(ctx, puzzleCanvas, this.state.borderMask, pvw, pvh);
   }
 
   async handleDownload() {

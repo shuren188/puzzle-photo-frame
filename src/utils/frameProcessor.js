@@ -1,10 +1,16 @@
 /**
  * 相框处理模块
  *
- * 最小化直接绘制法 - 回归最简单的方式
- *   1. 直接 drawImage 绘制相框
- *   2. 用 putImageData 将内框区域替换为用户图片
- *      绝不使用任何复合模式(destination-out/multiply等)
+ * 方案：拼图铺底 + 相框边框覆盖
+ *
+ * 预处理（相框加载时）：
+ *   用 getImageData + alpha 将相框内框区域设为透明 → 生成边框蒙版 canvas
+ *
+ * 合成（每次渲染时，仅两次 drawImage）：
+ *   Step 1: 拼图（pad模式）铺满整个画布
+ *   Step 2: 边框蒙版盖在最上层（内框透明，让拼图透出）
+ *
+ * 不再使用任何 composite 混合操作。
  */
 
 const FILE_MAP = {
@@ -24,8 +30,6 @@ const BOUNDS_MAP = {
   'false_200片':{ left: 180, top: 202, right: 1715, bottom: 2343 },
   'false_300/520片': { left: 26,  top: 182, right: 1631, bottom: 2395 },
 };
-
-let debugInfo = '';
 
 export function loadFrameImage(url) {
   return new Promise((resolve, reject) => {
@@ -52,98 +56,72 @@ export function getFrameBounds(frameImg, sizeName, isLandscape) {
   };
 }
 
-export function getDebugInfo() { return debugInfo; }
+/**
+ * 预处理：生成边框蒙版 canvas（内框透明）
+ * @param {HTMLImageElement} frameImg
+ * @param {{left,top,right,bottom}} bounds
+ * @returns {HTMLCanvasElement}
+ */
+export function createBorderMask(frameImg, bounds) {
+  const w = frameImg.naturalWidth;
+  const h = frameImg.naturalHeight;
+  const canvas = document.createElement('canvas');
+  canvas.width = w;
+  canvas.height = h;
+  const ctx = canvas.getContext('2d');
+  ctx.drawImage(frameImg, 0, 0);
+
+  const imageData = ctx.getImageData(0, 0, w, h);
+  const data = imageData.data;
+
+  // 内框区域 alpha = 0（透明）
+  for (let y = bounds.top; y < bounds.bottom; y++) {
+    const rowStart = y * w;
+    for (let x = bounds.left; x < bounds.right; x++) {
+      data[(rowStart + x) * 4 + 3] = 0;
+    }
+  }
+
+  ctx.putImageData(imageData, 0, 0);
+  return canvas;
+}
 
 /**
- * 将用户拼图合成到相框（最简实现）
+ * 将拼图与相框合成（两步纯 drawImage）
  *
- * 方法：
- * 1. 绘制相框全图到目标 canvas
- * 2. 读取内框区域的像素数据（含白板+切割线）
- * 3. 创建离屏画布，用 multiply 混合拼图和切割线
- * 4. 用 putImageData 把混合后的像素写入目标 canvas 的内框区域
- *    → 不使用 globalCompositeOperation，不依赖渲染上下文状态
+ * @param {CanvasRenderingContext2D} ctx
+ * @param {HTMLCanvasElement} puzzleCanvas - renderImage 输出的拼图画布
+ * @param {HTMLCanvasElement} borderMask - createBorderMask 输出的边框蒙版
+ * @param {number} canvasW
+ * @param {number} canvasH
  */
-export function compositeFramedImage(ctx, puzzleCanvas, frameImg, bounds, canvasW, canvasH) {
-  const startMs = performance.now();
+export function compositeFramedImage(ctx, puzzleCanvas, borderMask, canvasW, canvasH) {
   ctx.canvas.width = canvasW;
   ctx.canvas.height = canvasH;
 
-  // 1. 绘制相框全图
-  ctx.drawImage(frameImg, 0, 0, canvasW, canvasH);
-
-  // 2. 计算内框在画布上的坐标
-  const sx = canvasW / frameImg.naturalWidth;
-  const sy = canvasH / frameImg.naturalHeight;
-  const iL = Math.round(bounds.left * sx);
-  const iT = Math.round(bounds.top * sy);
-  const iR = Math.round(bounds.right * sx);
-  const iB = Math.round(bounds.bottom * sy);
-  const iw = iR - iL;
-  const ih = iB - iT;
-  debugInfo = `inner=${iw}x${ih} at (${iL},${iT}) on ${canvasW}x${canvasH}`;
-
-  if (iw < 2 || ih < 2) return;
-
-  // 3. 提取相框内框区域的像素（含切割线纹理）
-  const frameInnerData = ctx.getImageData(iL, iT, iw, ih);
-
-  // 4. 创建离屏画布 — 拼图 cover-fitted
+  // Step 1: 绘制拼图铺满整个画布（cover-fitted）
   const puzW = puzzleCanvas.width;
   const puzH = puzzleCanvas.height;
   const puzA = puzW / puzH;
-  const inA = iw / ih;
+  const ca = canvasW / canvasH;
 
   let dW, dH, dX, dY;
-  if (puzA > inA) {
-    dW = iw; dH = Math.round(iw / puzA);
-    dX = 0; dY = Math.round((ih - dH) / 2);
+  if (puzA > ca) {
+    dW = canvasW;
+    dH = Math.round(canvasW / puzA);
+    dX = 0;
+    dY = Math.round((canvasH - dH) / 2);
   } else {
-    dH = ih; dW = Math.round(ih * puzA);
-    dX = Math.round((iw - dW) / 2); dY = 0;
+    dH = canvasH;
+    dW = Math.round(canvasH * puzA);
+    dX = Math.round((canvasW - dW) / 2);
+    dY = 0;
   }
 
-  const puzInnerCanvas = document.createElement('canvas');
-  puzInnerCanvas.width = iw;
-  puzInnerCanvas.height = ih;
-  const piCtx = puzInnerCanvas.getContext('2d');
-  piCtx.drawImage(puzzleCanvas, 0, 0, puzW, puzH, dX, dY, dW, dH);
-  const puzzleData = piCtx.getImageData(0, 0, iw, ih);
+  ctx.drawImage(puzzleCanvas, dX, dY, dW, dH);
 
-  // 5. 像素级混合：保留切割线，替换白板
-  const out = new Uint8ClampedArray(puzzleData.data.length);
-  const len = puzzleData.data.length;
-  for (let i = 0; i < len; i += 4) {
-    const fR = frameInnerData.data[i];
-    const fG = frameInnerData.data[i + 1];
-    const fB = frameInnerData.data[i + 2];
-    const brightness = (fR + fG + fB) / 3;
-
-    if (brightness >= 220) {
-      // 纯白板 → 完全用用户图片
-      out[i] = puzzleData.data[i];
-      out[i+1] = puzzleData.data[i+1];
-      out[i+2] = puzzleData.data[i+2];
-    } else if (brightness <= 80) {
-      // 深色切割线 → 完全保留
-      out[i] = fR;
-      out[i+1] = fG;
-      out[i+2] = fB;
-    } else {
-      // 混合
-      const t = (brightness - 80) / (220 - 80);
-      out[i]   = puzzleData.data[i] * t + fR * (1 - t);
-      out[i+1] = puzzleData.data[i+1] * t + fG * (1 - t);
-      out[i+2] = puzzleData.data[i+2] * t + fB * (1 - t);
-    }
-    out[i+3] = 255;
-  }
-
-  // 6. 写回
-  const blended = new ImageData(out, iw, ih);
-  ctx.putImageData(blended, iL, iT);
-
-  debugInfo += ` done in ${Math.round(performance.now() - startMs)}ms`;
+  // Step 2: 边框蒙版盖在最上层（内框透明）
+  ctx.drawImage(borderMask, 0, 0, canvasW, canvasH);
 }
 
 export function clearFrameBoundsCache() {}
